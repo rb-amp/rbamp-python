@@ -1,0 +1,84 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rbamp"
+version = "1.1.0"
+description = "Client library for the rbAmp I2C AC sensor / dimmer module (CPython + MicroPython)."
+readme = "README.md"
+license = {text = "MIT"}
+authors = [
+    {name = "rbAmp team"},
+]
+keywords = [
+    "rbamp",
+    "i2c",
+    "energy",
+    "metering",
+    "ac",
+    "power-factor",
+    "raspberry-pi",
+    "smbus2",
+    "esphome",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: Implementation :: CPython",
+    "Programming Language :: Python :: Implementation :: MicroPython",
+    "Topic :: System :: Hardware :: Hardware Drivers",
+    "Topic :: Home Automation",
+]
+requires-python = ">=3.8"
+dependencies = [
+    # smbus2 is the canonical Python I2C client on Linux SBCs.
+    # MicroPython users get machine.I2C from the platform; no PyPI dep needed.
+    "smbus2>=0.4.2; platform_system != 'Windows'",
+]
+
+[project.optional-dependencies]
+mqtt = ["paho-mqtt>=1.6"]
+test = ["pytest>=7", "pytest-asyncio>=0.21"]
+docs = ["pdoc>=14"]
+
+[project.urls]
+Homepage      = "https://github.com/rb-amp/rbamp-python"
+Repository    = "https://github.com/rb-amp/rbamp-python.git"
+Documentation = "https://rbamp.com/docs/modules-basic-standard-api-reference"
+Issues        = "https://github.com/rb-amp/rbamp-python/issues"
+Changelog     = "https://github.com/rb-amp/rbamp-python/blob/main/CHANGELOG.md"
+
+[project.scripts]
+rbamp = "rbamp._cli:main"
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+include = ["rbamp*"]
+exclude = ["tests*", "examples_upy*", "examples_cpython*"]
+
+[tool.pytest.ini_options]
+testpaths = ["rbamp/tests"]
+addopts = "-v --tb=short"
+
+[tool.ruff]
+line-length = 100
+target-version = "py38"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B"]
+ignore = [
+    # MicroPython compatibility — we can't use modern type hints in shared code.
+    "UP006", "UP007",
+]
