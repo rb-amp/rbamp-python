@@ -208,27 +208,7 @@ except RbAmpError as e:
 
 ### The `dev.begin()` flow
 
-```text
-code          RbAmp                Backend             rbAmp module
-  │             │                    │                       │
-  ├─dev.begin()►                     │                       │
-  │             ├─read_u8(REG_VERSION)►                      │
-  │             │                    ├──[0x50, 0x03]────────►│
-  │             │                    │◄────────────────ACK───┤
-  │             │                    ├──[read 1 byte]───────►│
-  │             │                    │◄──────────────[0x03]──┤
-  │             │◄─────────0x03──────┤  (v1.2)               │
-  │             │                    │                       │
-  │             ├─read_float_le(U_RMS)►(4 single-byte reads) │
-  │             │  → 226.3 V         │                       │
-  │             │  → has_voltage_hw = True                   │
-  │             │                    │                       │
-  │             ├─write_cmd(LATCH)──►│                       │
-  │             │                    ├──[0x50, 0x01, 0x27]──►│
-  │             │  sleep(50ms)       │                       │
-  │             │                    │                       │
-  │◄────self────┤  (or raises RbAmpIOError on failure)        │
-```
+![rbAmp Python dev.begin() sequence](images/python-begin-flow.png)
 
 The first latch is a primer (the module returns whatever has
 accumulated since power-on, which is unsuitable for tariff metering).
@@ -237,27 +217,7 @@ never sees it.
 
 ### The `dev.read_period_snapshot()` flow
 
-```text
-code          RbAmp                Backend             rbAmp module
-  │             │                    │                       │
-  ├─read_period_snapshot()►          │                       │
-  │             ├─write_cmd(LATCH)──►│  t_now = time.monotonic()
-  │             │                    │                       │
-  │             │  sleep(50ms)       │                       │
-  │             │                    │                       │
-  │             ├─is_period_valid()─►│                       │
-  │             │  → True            │                       │
-  │             │                    │                       │
-  │             ├─read_float_le(AVG_P0)►(4 reads)            │
-  │             ├─read_float_le(MAX_P0)►(4 reads)            │
-  │             ├─read_u32_le(LATCH_MS)►(4 reads)            │
-  │             │                    │                       │
-  │             │  dt = t_now − last_latch                    │
-  │             │  energy.wh[ch] += avg_p[ch] × dt / 3600    │
-  │             │  last_latch = t_now                         │
-  │             │                    │                       │
-  │◄─snap──────┤                    │                       │
-```
+![rbAmp Python read_period_snapshot() sequence](images/python-snapshot-flow.png)
 
 The atomic latch on the module side guarantees that every ADC
 micro-sample in a period lands in exactly one snapshot — no
