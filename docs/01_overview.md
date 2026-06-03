@@ -179,72 +179,7 @@ The package covers every typical task in the first rows.
 
 ## Architecture
 
-```text
-┌─────────────────────────────────────────────────────┐
-│  User code (.py)                                    │
-│   from smbus2 import SMBus                          │
-│   from rbamp import RbAmp, RbAmpSensorClass         │
-│   with SMBus(1) as bus, RbAmp(bus, 0x50) as dev:    │
-│       # __enter__ calls dev.begin() itself;         │
-│       # explicit begin() shown for transparency     │
-│       dev.set_sensor_class(RbAmpSensorClass.SCT_013)│
-│       dev.set_ct_model(3)                           │
-│       snap = dev.read_period_snapshot()             │
-│       dev.energy.wh(0)                              │
-└─────────────────────────────────────────────────────┘
-                       │
-                       ▼
-┌─────────────────────────────────────────────────────┐
-│  Public API of the RbAmp class (rbamp/__init__.py)  │
-│   ┌─────────────────────────────────────────────┐   │
-│   │ Lifecycle:      begin / probe / wait_ready  │   │
-│   │ RT properties:  .voltage / .power[ch] /     │   │
-│   │                 .current[ch] / .frequency   │   │
-│   │ RT methods:     read_voltage / read_power / │   │
-│   │                 read_all                    │   │
-│   │ Period:         latch_period /              │   │
-│   │                 read_period_snapshot        │   │
-│   │ Async:          stream_period               │   │
-│   │ Configuration:  set_sensor_class /          │   │
-│   │                 set_ct_model                │   │
-│   │ Diagnostics:    retry_exhaustion_count /    │   │
-│   │                 sanity_reject_count         │   │
-│   │ Exceptions:     RbAmpError → IOError /      │   │
-│   │                 TimeoutError / StaleError / │   │
-│   │                 ParamError / ModeError /    │   │
-│   │                 VersionError                │   │
-│   └─────────────────────────────────────────────┘   │
-│                       │                             │
-│                       ▼                             │
-│   ┌─────────────────────────────────────────────┐   │
-│   │ Backend selection (inside __init__):        │   │
-│   │  bus.readfrom_mem  → MachineI2CBackend      │   │
-│   │  bus.read_byte_data → SMBusBackend          │   │
-│   │  duck-typed        → custom (FTDI / mocks)  │   │
-│   └─────────────────────────────────────────────┘   │
-│                       │                             │
-│                       ▼                             │
-│   ┌─────────────────────────────────────────────┐   │
-│   │ Instance state:                             │   │
-│   │  • RbAmpEnergy — Wh accumulator             │   │
-│   │  • RbAmpSnapshot / RbAmpPeriodSnapshot      │   │
-│   │  • Time of last latch (monotonic)           │   │
-│   └─────────────────────────────────────────────┘   │
-└─────────────────────────────────────────────────────┘
-                       │
-                       ▼
-┌─────────────────────────────────────────────────────┐
-│  Backend — native I²C on the host platform:         │
-│   smbus2 (CPython)  /  machine.I2C (MicroPython)    │
-└─────────────────────────────────────────────────────┘
-                       │
-                       ▼
-┌─────────────────────────────────────────────────────┐
-│  rbAmp module at address 0x50                       │
-│   • Measurement pipeline U / I / P / PF (~200 ms)   │
-│   • Period accumulator (atomic CMD_LATCH_PERIOD)    │
-└─────────────────────────────────────────────────────┘
-```
+![rbAmp Python library architecture — user code → RbAmp public API → native I²C backend → rbAmp module @0x50](images/python-architecture.png)
 
 ## Exception hierarchy
 
