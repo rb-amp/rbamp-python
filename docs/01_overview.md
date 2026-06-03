@@ -188,16 +188,7 @@ Unlike the Arduino library (where errors are reported via
 are reported via `esp_err_t`), the Python package uses the
 **classic Python pattern** — an exception hierarchy.
 
-```text
-RbAmpError
-├── RbAmpIOError         — I²C transport error (NACK after retry, bus glitch)
-├── RbAmpTimeoutError    — timeout (waitReady expired / commit_address_change window)
-├── RbAmpNotReadyError   — device not ready (reserved)
-├── RbAmpStaleError      — period snapshot not ready (valid flag = 0)
-├── RbAmpParamError      — invalid argument (channel out of range, code outside 1..5)
-├── RbAmpModeError       — operation requires develop mode
-└── RbAmpVersionError    — incompatible firmware version (or REG_VERSION = 0/0xFF)
-```
+![rbAmp Python exception hierarchy (RbAmpError and subclasses)](images/python-exception-hierarchy.png)
 
 The standard Python pattern:
 

@@ -101,17 +101,7 @@ means existing code with `except OSError:` handlers **keeps
 catching** rbAmp errors without any rewrite — the standard Python
 convention for hardware-I/O drivers.
 
-```text
-OSError
-└── RbAmpError                  (base; inherits OSError for compatibility)
-    ├── RbAmpIOError            — I²C transport error (NACK, retry exhausted, sanity reject)
-    ├── RbAmpTimeoutError       — timeout (wait_ready / commit_address_change window)
-    ├── RbAmpNotReadyError      — device not ready (reserved; not raised in v1.1.0)
-    ├── RbAmpStaleError         — period snapshot stale (valid flag = 0)
-    ├── RbAmpParamError         — invalid argument (channel out of range, code outside 1..5)
-    ├── RbAmpModeError          — operation requires develop mode (factory / integrator)
-    └── RbAmpVersionError       — incompatible firmware version
-```
+![rbAmp Python exception hierarchy (RbAmpError and subclasses)](images/python-exception-hierarchy.png)
 
 > **Note**: `RbAmpParamError` inherits from `RbAmpError` +
 > `ValueError` on CPython (multi-base). On MicroPython, where
