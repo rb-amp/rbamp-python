@@ -1,12 +1,12 @@
-# 08 · Cloud Integrations
+# 08 · Cloud integrations
 
-How to push `rbamp` readings to cloud platforms — AWS IoT
+How to send `rbamp` readings to cloud platforms — AWS IoT
 Core, Azure IoT Hub, Google Cloud, and serverless / managed
-observability pipelines. For each platform you get the Python setup
+observability pipelines. For each platform there is a Python setup
 plus the cloud-side instructions.
 
 Self-hosted DIY platforms (Home Assistant, Node-RED, InfluxDB OSS)
-are covered in [07 · DIY Integrations](07_diy_integrations.md).
+— see [07 · DIY integrations](07_diy_integrations.md).
 
 | Cloud | Transport | Auth | CPython | MicroPython |
 |---|---|---|---|---|
@@ -17,10 +17,9 @@ are covered in [07 · DIY Integrations](07_diy_integrations.md).
 | Generic webhook / REST | HTTPS POST | API key | `requests` | `urequests` |
 
 > ⚠ **TLS cost on MicroPython.** A TLS handshake needs
-> ~30 KB of heap on an ESP32. On small targets (ESP32-C2) it can
-> run out of memory if you also have WiFi + buffers running in
-> parallel. On CPython it's effectively a non-issue (Pi 3+/4+ have
-> 1+ GB of RAM).
+> ~30 kB of heap on the ESP32. On small targets (ESP32-C2) it can OOM
+> if you have Wi-Fi + buffers running in parallel. On CPython it is
+> practically a non-issue (Pi 3+/4+ have 1+ GB of RAM).
 >
 > For memory-tight targets we recommend a **local Mosquitto
 > bridge** on a Pi/SBC: the MicroPython device publishes to
@@ -31,7 +30,7 @@ are covered in [07 · DIY Integrations](07_diy_integrations.md).
 
 ### CPython — filesystem paths
 
-CPython ships with system `ca-certificates` (Debian/Ubuntu:
+CPython ships with the system `ca-certificates` (Debian/Ubuntu:
 `/etc/ssl/certs/`). For additional device certificates, place the
 files next to your script and pass the paths to `ssl.SSLContext`:
 
@@ -43,9 +42,10 @@ ctx = ssl.create_default_context(cafile="/etc/ssl/certs/ca-certificates.crt")
 ctx.load_cert_chain(certfile="device.cert.pem", keyfile="device.private.key")
 ```
 
-### MicroPython — embedded bytes or filesystem
+### MicroPython — bytes-embedded or filesystem
 
-MicroPython has no full filesystem TLS storage. Two options:
+MicroPython has no full-featured filesystem TLS storage. Two
+options:
 
 1. **Embedded bytes** — cert files as Python objects in the script:
 
@@ -61,7 +61,7 @@ MicroPython has no full filesystem TLS storage. Two options:
    ```
 
 2. **Via the flash filesystem** — place the cert files in `/lib/certs/`
-   on the device (using `mpremote cp`) and read them with the
+   on the device (via `mpremote cp`) and read them through the
    standard `open()`:
 
    ```python
@@ -71,9 +71,9 @@ MicroPython has no full filesystem TLS storage. Two options:
    ```
 
 > On some MicroPython ports (especially ESP8266) `ssl.SSLContext`
-> is missing — a simplified `ussl.wrap_socket(...)` with limited
-> validation is used instead. For production deployments, choose an
-> ESP32-family chip with a full TLS stack.
+> is absent — a simplified `ussl.wrap_socket(...)` with limited
+> validation is used instead. For production deployments, pick an
+> ESP32-family target with a full TLS stack.
 
 ---
 
@@ -86,7 +86,7 @@ AWS IoT Core uses mutual TLS with an X.509 device certificate.
 1. AWS Console → **IoT Core → Manage → Things → Create things → Single thing**.
 2. Generate the certificate + keys; download `device.cert.pem`,
    `device.private.key`, `AmazonRootCA1.pem`.
-3. Attach a policy allowing `iot:Connect`, `iot:Publish`
+3. Attach a policy granting `iot:Connect`, `iot:Publish`
    on `arn:aws:iot:<region>:<acc>:topic/rbamp/+/state`.
 4. Note your AWS IoT endpoint:
    `xxxxxx-ats.iot.<region>.amazonaws.com:8883`.
@@ -141,7 +141,7 @@ from rbamp import RbAmp, RbAmpSensorClass, RbAmpStaleError
 
 AWS_ENDPOINT  = b"xxxxxx-ats.iot.eu-west-1.amazonaws.com"
 
-# Cert files in `/lib/certs/` (copied over with mpremote cp)
+# Cert files in `/lib/certs/` (copied over via mpremote cp)
 with open("/lib/certs/AmazonRootCA1.pem", "rb") as f:
     AWS_ROOT_CA = f.read()
 with open("/lib/certs/device.cert.pem", "rb") as f:
@@ -185,16 +185,16 @@ with RbAmp(i2c, 0x50) as dev:
 - Create an **IoT Rule**:
   `SELECT *, topic(2) AS device FROM 'rbamp/+/state'` → Kinesis
   Data Firehose or Lambda for storage.
-- For dashboards, use AWS IoT SiteWise (industrial historian) or
+- For dashboards — AWS IoT SiteWise (industrial historian) or
   Timestream (time-series DB) → QuickSight.
-- If Home Assistant runs on a Pi and consumes data from AWS, set
-  up a local Mosquitto bridge (cheaper and faster than HA → AWS
-  directly).
+- If Home Assistant runs on a Pi and consumes data from AWS,
+  set up a local Mosquitto bridge (cheaper and faster than HA →
+  AWS directly).
 
 ### CPython alternative — `boto3` via the REST API
 
-For infrequent publishing (once an hour or less) you can skip MQTT
-entirely and use `boto3.client('iot-data').publish()`:
+For infrequent publishes (once an hour or less), you can skip
+MQTT entirely and use `boto3.client('iot-data').publish()`:
 
 ```python
 import boto3, json
@@ -203,15 +203,15 @@ iot.publish(topic="rbamp/main/state",
             qos=1, payload=json.dumps(payload))
 ```
 
-Authorization goes through the standard AWS credentials chain (env
-vars / `~/.aws/credentials` / IAM role). Handy for batch cron
-publishing from a Pi. MicroPython has no `boto3`.
+Authorization is via the standard AWS credentials chain (env vars /
+`~/.aws/credentials` / IAM role). Handy for batch cron publishing
+from a Pi. MicroPython has no `boto3`.
 
 ### On cost
 
-Publishing once a minute per device, AWS IoT comes to ~525k
+Publishing once a minute per device, AWS IoT amounts to ~525 k
 messages per year → ~$2.60/year/device on the "Connectivity" +
-"Messaging" tiers (2026, us-east-1). Timestream / Lambda costs
+"Messaging" tariff (2026, us-east-1). Timestream / Lambda costs
 are separate.
 
 ---
@@ -227,7 +227,7 @@ Azure IoT Hub supports MQTT 3.1.1 over TLS with SAS-token auth
    `rbamp-main`, authentication = **Symmetric key**.
 2. Save the connection string:
    `HostName=foo.azure-devices.net;DeviceId=rbamp-main;SharedAccessKey=…`.
-3. Generate a SAS token. On CPython, use the `azure-iot-device`
+3. Generate a SAS token. On CPython via the `azure-iot-device`
    SDK or a manual HMAC:
 
    ```python
@@ -249,9 +249,9 @@ Azure IoT Hub supports MQTT 3.1.1 over TLS with SAS-token auth
    sas = generate_sas("foo.azure-devices.net/devices/rbamp-main", "BASE64KEY=")
    ```
 
-4. On MicroPython, either use `ucryptolib` + a manual HMAC (slow), or
-   simply hardcode a 1-year SAS token generated on your build
-   machine.
+4. On MicroPython — either `ucryptolib` + a manual HMAC (slow), or
+   simply hardcode a 1-year SAS token generated on the
+   build machine.
 
 ### CPython version (Azure IoT Hub)
 
@@ -272,7 +272,7 @@ mqtt.tls_set_context(ctx)
 mqtt.connect(AZ_HOST, 8883, keepalive=60)
 mqtt.loop_start()
 
-# In your 60-second loop:
+# Inside your 60-second loop:
 mqtt.publish(f"devices/{AZ_DEVICE}/messages/events/",
              json.dumps(payload), qos=1)
 ```
@@ -301,17 +301,17 @@ mqtt.publish(b"devices/rbamp-main/messages/events/",
 
 ### SAS-token expiry
 
-SAS tokens carry an `expiry` claim — typical lifetimes range from 1
-hour to 1 year. For a CPython deployment, use the `azure-iot-device`
-SDK; it rotates the token for you. For MicroPython, generate a
-1-year token on the build machine and bake it into the script, or
-implement HMAC rotation via `ucryptolib`.
+SAS tokens carry an `expiry` claim — a typical lifetime runs from 1 hour
+to 1 year. For a CPython deploy, use the `azure-iot-device` SDK;
+it rotates the token itself. For MicroPython, generate a 1-year
+token on the build machine and bake it into the script; or implement
+HMAC rotation via `ucryptolib`.
 
 ### Cloud-side processing (Azure)
 
 - Route messages to **Event Hubs** for high-throughput
   ingestion → Stream Analytics → Power BI dashboards.
-- Cheaper alternative: messages → **Storage Account (blob)** →
+- A cheaper alternative: messages → **Storage Account (blob)** →
   Synapse Serverless SQL for ad-hoc queries.
 
 ---
@@ -320,14 +320,14 @@ implement HMAC rotation via `ucryptolib`.
 
 Google shut down Cloud IoT Core in 2023. Migration paths:
 
-- **MQTT broker on Compute Engine** (you deploy Mosquitto in a VM
-  yourself) — the same pattern as in
-  [07 · DIY Integrations](07_diy_integrations.md), but pointing at
+- **An MQTT broker on Compute Engine** (you deploy your own
+  Mosquitto in a VM) — the same pattern as in
+  [07 · DIY integrations](07_diy_integrations.md), but pointing at
   your VM's public IP.
 - **HiveMQ Cloud / EMQX Cloud** — managed MQTT brokers, ~$10-20/mo
   on hobbyist tiers.
 - **Pub/Sub over HTTPS** — publish directly to a Pub/Sub topic
-  via the REST API. On CPython, it's easiest via the
+  via the REST API. On CPython it is easier through the
   `google-cloud-pubsub` SDK + a service-account JSON key:
 
   ```python
@@ -339,17 +339,16 @@ Google shut down Cloud IoT Core in 2023. Migration paths:
   publisher.publish(topic_path, json.dumps(payload).encode())
   ```
 
-For MicroPython Pub/Sub over HTTPS, see the "Generic webhook / REST"
-section below, substituting the Pub/Sub publish endpoint + an OAuth
-bearer token.
+For MicroPython Pub/Sub over HTTPS — see the "Generic webhook / REST"
+section below, substituting the Pub/Sub publish endpoint + an OAuth bearer token.
 
 ---
 
 ## InfluxDB Cloud (TLSv1.3 + line-protocol)
 
 InfluxDB Cloud (Serverless tier) accepts line-protocol over
-HTTPS — the same form as the OSS path in
-[07 · DIY Integrations](07_diy_integrations.md), but with
+HTTPS — the same shape as the OSS path in
+[07 · DIY integrations](07_diy_integrations.md), but with
 `cloud2.influxdata.com` as the host and an API token for auth.
 
 ### CPython version (InfluxDB Cloud)
@@ -389,8 +388,8 @@ with SMBus(1) as bus, RbAmp(bus, 0x50) as dev:
         push_influx(dev.voltage, snap.avg_p[0], dev.energy.wh(0))
 ```
 
-`requests` uses the system CA bundle — on a stock Debian/Ubuntu
-CPython install this "just works".
+`requests` uses the system CA bundle — on a standard CPython
+Debian/Ubuntu install this "just works".
 
 ### MicroPython version (InfluxDB Cloud)
 
@@ -422,24 +421,23 @@ def push_influx(u, p, e_wh):
         print("influx request failed:", e)
 ```
 
-> On most MicroPython ports `urequests` uses a built-in CA bundle
-> (without verification) or the system one. For strict
-> validation, use `urequests.post(..., verify=True)` if your port
-> supports it; otherwise go through `ssl.SSLContext` + low-level
+> On most MicroPython ports `urequests` uses a built-in
+> CA bundle (without verification) or the system one. For strict
+> validation — use `urequests.post(..., verify=True)` if
+> your port supports it; otherwise go through `ssl.SSLContext` + low-level
 > `usocket`.
 
-The free InfluxDB Cloud tier (5 GB / 30-day retention) covers
-~5,000 points at a one-minute cadence per day — generous for home
-use.
+The free InfluxDB Cloud tier (5 GB / 30 days retention) covers
+~5,000 points at a one-minute cadence per day — generous for home use.
 
 ---
 
 ## Generic webhook / REST
 
 Publishing to any HTTPS endpoint with an API key — works with
-IFTTT webhooks, custom Flask / FastAPI services, or any cloud
-function (AWS Lambda / Azure Functions / GCP Cloud Run) exposed
-over HTTPS.
+IFTTT webhooks, custom Flask / FastAPI services, or any
+cloud function (AWS Lambda / Azure Functions / GCP Cloud Run)
+exposed as HTTPS.
 
 ### CPython
 
@@ -492,16 +490,16 @@ def push_webhook(u, p, e_wh):
 
 At a low rate (≤ once a minute) the overhead is acceptable. At
 higher rates, batch the data on the Python side (accumulate
-10 minutes in a ring buffer, publish one bulk JSON) so you don't
-pay for a TLS handshake per request.
+10 minutes in a ring buffer and publish one bulk JSON) so you don't
+pay a TLS handshake per request.
 
 ---
 
-## Hybrid: local storage + cloud sync
+## Hybrid: local storage + sync to the cloud
 
 For offline-tolerant deployments: log locally once a minute and
-send to the cloud once an hour. Survives WiFi drops / cloud
-outages with no data loss.
+push to the cloud once an hour. This survives Wi-Fi drops / cloud
+outages without data loss.
 
 ### CPython (rotating file + hourly sync)
 
@@ -519,7 +517,7 @@ handler.setFormatter(logging.Formatter("%(asctime)s,%(message)s",
 log.addHandler(handler)
 
 def sync_to_cloud_if_due():
-    """Once an hour: read rbamp.csv, send new rows to InfluxDB Cloud."""
+    """Once an hour: read rbamp.csv, push the new rows to InfluxDB Cloud."""
     # ...uses push_influx from the section above + a state file for the offset...
 
 with SMBus(1) as bus, RbAmp(bus, 0x50) as dev:
@@ -554,7 +552,7 @@ def append_local(snap, dev):
             snap.master_dt_ms))
 
 def sync_if_due():
-    """Once an hour: read the accumulated log, send it to the cloud."""
+    """Once an hour: read the accumulated log, push it to the cloud."""
     try:
         with open("/lib/log.csv") as f:
             for line in f:
@@ -567,51 +565,45 @@ def sync_if_due():
         pass   # offline / no file yet
 ```
 
-The package's `dev.energy.wh(0)` accumulator keeps counting
-throughout the offline window — no data is lost as long as the
-Python host stays powered.
+The package's `dev.energy.wh(0)` accumulator keeps counting throughout
+the offline window — no data is lost as long as the Python host stays
+powered.
 
 ---
 
 ## Energy budget (for MicroPython battery deployments)
 
-A TLS handshake is an expensive operation: ~3 s + ~30 KB of heap
-per connection. For MicroPython deep-sleep scenarios (see
+A TLS handshake is an expensive operation: ~3 s + ~30 kB of heap per
+connection. For MicroPython deep-sleep scenarios (see
 [06 · Examples](06_examples.md), Scenario 9):
 
-- **Reuse the TLS session** between wakeups via TLS session
-  resumption — `umqtt.simple` supports a persistent session via
-  `clean_session=False`, and the broker remembers your subscriptions.
+- **Reuse the TLS session** across wakes via
+  TLS session resumption — `umqtt.simple` supports a persistent
+  session through `clean_session=False`, and the broker remembers your subscriptions.
 - **Batch** several measurements on local flash and publish them
-  in a single bulk POST per wakeup — the pattern from the "Hybrid"
-  section above.
-- **MQTT keepalive** doesn't need to be held outside deep sleep —
-  the device sleeps between wakeups, and the TLS handshake runs on
-  every wakeup (unless resumed).
+  as one bulk POST per wake — the pattern from the "Hybrid" section above.
+- **MQTT keepalive** does not need to be held outside deep sleep — the device
+  sleeps between wakes, and the TLS handshake runs on each
+  wake (unless resumed).
 
-At a 10-minute wakeup interval on a 2000 mAh Li-ion cell, expect
-~3 months of operation on WiFi + TLS, versus ~6 months on WiFi +
-plain MQTT (see Scenario 9).
+At a 10-minute wake interval on a 2000 mAh Li-ion, expect ~3
+months of runtime on Wi-Fi + TLS, versus ~6 months on Wi-Fi + plain
+MQTT (see Scenario 9).
 
-CPython on a Raspberry Pi typically runs 24/7 from a power supply —
-the TLS energy budget isn't critical. For a production deployment
+CPython on a Raspberry Pi normally runs 24/7 off a power supply —
+the TLS energy budget is not critical. For a production deployment
 with Pi power-consumption optimization, see
-[10 · Troubleshooting](10_troubleshooting.md), section "Script hangs /
-crashes on timeout" (a signal-aware loop for `systemctl suspend`).
+[10 · Troubleshooting](10_troubleshooting.md), the "Script hangs /
+crashes on timeout" section (a signal-aware loop for `systemctl suspend`).
 
 ---
 
 ## Links
 
-- [06 · Examples](06_examples.md) — the base projects that cloud
-  integrations build on (especially Scenario 9 "deep-sleep
+- [06 · Examples](06_examples.md) — the base projects that the
+  cloud integrations build on (especially Scenario 9 "deep-sleep
   logger" and Scenario 10 "async streaming")
-- [07 · DIY Integrations](07_diy_integrations.md) — self-hosted
+- [07 · DIY integrations](07_diy_integrations.md) — self-hosted
   alternatives
 - [10 · Troubleshooting](10_troubleshooting.md) — TLS handshake /
   heap budget / signal handling
-
-
----
-
-[← DIY Integrations](07_diy_integrations.md) | [Contents](README.md) | [API Reference →](09_api_reference.md)

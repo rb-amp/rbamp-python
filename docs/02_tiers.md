@@ -1,66 +1,67 @@
 # 02 · Module Tiers
 
-## What a tier is
+![rbAmp product tiers: BASIC / STANDARD / PRO capability ladder](images/tier-ladder.png)
+
+## What a Tier Is
 
 **rbAmp** ships in three tiers: **BASIC**, **STANDARD**, **PRO**.
-A tier is a complete pairing of **hardware revision and firmware**,
-not a software flag. Moving between tiers requires a physical SKU
-change, not a firmware update.
+A tier is a complete bundle of a **hardware revision and firmware**, not a
+software flag. Moving between tiers requires a physical SKU change,
+not a firmware update.
 
-From the perspective of the package and your code: **the `RbAmp`
-class API is identical across all tiers**. The differences show up
-in which values the module returns and how the firmware's behavior
-interprets the data (in particular — export to the grid).
+From the package and user-code perspective: **the `RbAmp` class API is
+identical across all tiers**. The differences show up in which
+values the module returns and in how the firmware behavior interprets the data
+(export to the grid in particular).
 
-## Current firmware state (v1.2)
+## Current State
 
-In firmware v1.2, **only the BASIC** tier is implemented and shipped.
-STANDARD and PRO are on the roadmap and are not implemented in the
-current firmware.
+In the current rbAmp firmware, **only the BASIC** tier is implemented and shipped.
+STANDARD and PRO are on the roadmap and not implemented.
 
-| Tier | Firmware | Shipping |
-|---|---|---|
-| **BASIC** | v1.2 | ✅ yes |
-| **STANDARD** | planned in v1.3+ | ❌ no |
-| **PRO** | planned in v1.3+ | ❌ no |
+| Tier | Shipping |
+|---|---|
+| **BASIC** | ✅ yes |
+| **STANDARD** | ❌ planned |
+| **PRO** | ❌ planned |
 
-## BASIC — the entry-level consumer-metering tier
+## BASIC — Entry-Level Consumption-Metering Tier
 
 ### Hardware
 
-A cost-optimized analog signal path, suitable for typical household
-loads. The module includes an isolated analog front-end, an
-on-board power regulator, and a factory calibration stored in flash.
+A cost-optimized analog path suited to typical
+household loads. The module includes an isolated analog front-end,
+an on-board power regulator, and factory calibration in flash memory.
 
-### Firmware behavior
+### Firmware Behavior
 
-The logic of a classic mechanical disc meter — **the count only
-moves forward; export to the grid is not subtracted**.
+The logic of a classic mechanical disc meter — **the count only goes
+forward; export to the grid is not subtracted**.
 
 The three "layers" of active-power values behave differently:
 
 | Signal | Meaning | Behavior on BASIC |
 |---|---|---|
-| `dev.power[ch]` / `dev.read_power(ch)` | instantaneous RT power, updated ~200 ms | **signed** — a negative value is visible in real time (export) |
-| `snap.avg_p[ch]` (from `dev.read_period_snapshot()`) | average power over the period | each 200 ms window of average P is **clamped** to `max(P, 0)` before being added to the period accumulator |
-| `dev.energy.wh(ch)` | Wh accumulated by the package | **monotonic** — consumption only; export is not counted |
+| `dev.power[ch]` / `dev.read_power(ch)` | instantaneous RT power, ~200 ms update | **signed** — a negative value is visible in real time (export) |
+| `snap.avg_p[ch]` (from `dev.read_period_snapshot()`) | average power over the period | each 200 ms average-P window is **clamped** to `max(P, 0)` before being added to the period accumulator |
+| `dev.energy.wh(ch)` | accumulated Wh by the package | **monotonic** — consumption only; export is not counted |
 
-In other words: the user **sees** export in the RT reading, but on
-BASIC the package's Wh counter does not include it.
+In other words: the user **sees** export in the RT reading, but it is
+not present in the package's Wh counter on BASIC.
 
-### Typical applications
+### Typical Applications
 
-- Households without their own generation (no solar panels, wind
-  turbines, or battery systems)
+- Households without their own generation (no solar panels,
+  wind turbines, battery systems)
 - Submetering of purely consuming loads (water heaters, motors,
-  appliances)
-- Building consumption monitoring where bidirectional metering isn't
-  required
+  home appliances)
+- Building consumption monitoring where bidirectional metering is
+  not required
 
-### Bidirectional metering on BASIC (master-side)
+### Bidirectional Metering on BASIC (Master-Side)
 
-If you need to track export to the grid separately on a BASIC
-module, **do it on the master side**. The RT power `dev.power[0]` is
+If you need to track export to the grid separately on a BASIC module,
+**do it on the master side**. The RT power `dev.power[0]` is
 signed (or the equivalent method `dev.read_power(0)`), so:
 
 ```python
@@ -73,9 +74,9 @@ def bidirectional_loop(dev):
     t_prev = time.monotonic()
 
     while True:
-        # Sample RT power at 5 Hz — matches the firmware commit
-        # cadence (200 ms per channel). Faster gives empty repeat
-        # reads; slower loses resolution on abrupt load transitions.
+        # Sample RT power at 5 Hz — matches the firmware-commit
+        # cadence (200 ms per channel). Faster yields empty repeated
+        # reads; slower loses resolution on sharp load transitions.
         # ±2 % accuracy is achievable for typical mixed loads with
         # an inverter.
         time.sleep(0.2)
@@ -97,111 +98,110 @@ def bidirectional_loop(dev):
 ```
 
 On MicroPython, replace `time.monotonic()` with `time.ticks_ms()` /
-`time.ticks_diff()` (more precise and cheaper on RAM on embedded
+`time.ticks_diff()` (more accurate and cheap on RAM on embedded
 platforms) and `time.sleep(0.2)` with `time.sleep_ms(200)`. On
-CPython, no changes are needed.
+CPython, no changes.
 
-A full working example of the pattern is in [06_examples.md](06_examples.md),
+A complete working example of the pattern is in [06_examples.md](06_examples.md),
 the "Master-side bidirectional metering" scenario, as well as the
-source files [`examples_upy/07_bidirectional_energy.py`](../rbamp/examples_upy/07_bidirectional_energy.py)
-and [`examples_cpython/05_bidirectional_energy.py`](../rbamp/examples_cpython/05_bidirectional_energy.py).
+source files [`examples_upy/07_bidirectional_energy.py`](https://github.com/rb-amp/rbamp-python)
+and [`examples_cpython/05_bidirectional_energy.py`](https://github.com/rb-amp/rbamp-python).
 
-## STANDARD — the bidirectional tier *(planned, v1.3+)*
+## STANDARD — Bidirectional Tier *(planned)*
 
 > This section describes **planned** functionality. It is not
-> implemented in the current firmware, v1.2.
+> implemented in the current rbAmp firmware.
 
-### What will be added
+### What Will Be Added
 
-- **Hardware**: an extended analog stack for accurate measurement of
-  both consumption and reverse flow
-- **Firmware**: bidirectional metering — two separate period
-  accumulators (consumption and export), exposed separately through
-  additional registers (details in the spec after the v1.3+ release)
+- **Hardware**: an extended analog stack for accurate
+  measurement of both consumption and reverse flow
+- **Firmware**: bidirectional accounting — two separate per-period
+  accumulators (consumption and export), with separate exposure through
+  additional registers (details after the STANDARD tier is released)
 - **Package API**: `dev.energy.wh(ch)` will begin returning a signed
-  net value (consumption − export) automatically, without master-side
-  tricks
+  net value (consumption − export) automatically, with no
+  master-side tricks
 
-### Typical applications (once available)
+### Typical Applications (Once Released)
 
 - Homes with rooftop solar generation
 - Homes with wind turbines
 - Storage systems (batteries)
 - Regenerative loads
-- V2G (vehicle-to-grid) EV charging
+- V2G (vehicle-to-grid) electric-vehicle charging
 
-## PRO — the premium tier *(planned, v1.3+)*
+## PRO — Premium Tier *(planned)*
 
 > This section describes **planned** functionality. It is not
-> implemented in the current firmware, v1.2.
+> implemented in the current rbAmp firmware.
 
-### What PRO will add
+### What PRO Will Add
 
-- **Hardware**: a PRO-grade analog front-end (lower noise, tighter
-  linearity), premium factory calibration, optional extended channel
-  sets
-- **Firmware**: bidirectional metering (like STANDARD) plus
-  additional diagnostic features — details in the spec after the
-  v1.3+ release
-- **Package API**: extended diagnostic accessors (the exact set —
-  after it's implemented in firmware)
+- **Hardware**: a PRO-grade analog front-end (lower
+  noise, tighter linearity), premium factory calibration,
+  optional extended channel sets
+- **Firmware**: bidirectional metering (as in STANDARD) plus
+  additional diagnostic features — details after the PRO tier
+  is released
+- **Package API**: extended diagnostic accessors
+  (exact set after the firmware implementation)
 
-### PRO applications (once available)
+### PRO Applications (Once Released)
 
-- Commercial tenant submetering
+- Submetering of commercial tenants
 - Billing-grade accuracy installations
-- Instrumentation labs
+- Test-and-measurement laboratories
 - Energy-intensive industrial loads
 
-## How to determine the tier at runtime
+## How to Detect the Tier at Runtime
 
-In firmware v1.2 there is no explicit "tier" register. Indirect
+In the current firmware there is no explicit "tier" register. Indirect
 indicators are available through handle properties:
 
 ```python
-# Firmware version — on v1.2, == 0x03
+# Firmware version — opaque byte
 fw = dev.firmware_version
 
-# Presence of a voltage sensor (UI* variants vs. I*-only)
+# Presence of a voltage sensor (UI* variants vs I*-only)
 voltage_hw = dev.has_voltage_hw
 
 # Number of current channels (1 / 2 / 3)
 channels = dev.channels
+
+# Full SKU — variant byte from REG_HW_VARIANT (0x55)
+# 1=UI1, 2=UI2, 3=UI3 (roadmap), 4=I1, 5=I2, 6=I3
+variant = dev.hw_variant
 ```
 
-> **Note (v1.2)**: the indirect indicators above give various
-> signals (firmware version, channel count, presence of a voltage
-> sensor), but **do not give the tier** — on v1.2 firmware the tier
-> is implicitly always **BASIC**. Use the SKU label on the module's
-> enclosure as the source of truth. An explicit tier register will
-> be added in firmware v1.3+ when STANDARD starts shipping.
+> **Note**: the indirect indicators above give different signals (the
+> firmware version, channel count, presence of a voltage sensor, SKU), but
+> they do **NOT** give the tier — the current firmware is implicitly always
+> **BASIC**. Use the SKU label on the module enclosure as the source of truth
+> for the tier. An explicit tier register will appear once STANDARD starts
+> shipping.
 
-## Where tier-dependent items are flagged in the docs
+## Where Tier-Dependent Places Are Marked in the Documentation
 
-Throughout the package text and the canonical documentation,
-tier-dependent features are flagged explicitly, for example:
+In the package text and canonical documentation, tier-dependent
+features are marked explicitly, for example:
 
-> **STANDARD / PRO only** — this register is not available on a
-> BASIC module.
+> **STANDARD / PRO only** — this register is not available on a BASIC module.
 
 Or, conversely, BASIC-specific behavior:
 
-> **BASIC**: the `dev.energy.wh(ch)` counter is monotonic — export
-> to the grid is not counted. For bidirectional metering, see the
+> **BASIC**: the `dev.energy.wh(ch)` counter is monotonic — export to the grid
+> is not counted. For bidirectional metering, see the
 > "Master-side bidirectional metering" scenario in
-> [06_examples.md](06_examples.md), or use a STANDARD/PRO module.
+> [06_examples.md](06_examples.md), or use a STANDARD/PRO
+> module.
 
-## What's next
+## What's Next
 
-- [03 · Current sensor selection](03_sensor_selection.md) — which
-  SCT-013 for which job
-- [04 · Hardware connection](04_hardware.md) — hardware specifics for
-  each host (RPi / ESP32 / RP2040 / STM32 / Pyboard)
+- [03 · Current Sensor Selection](03_sensor_selection.md) — which SCT-013
+  for which task
+- [04 · Wiring](04_hardware.md) — hardware specifics for each
+  host (RPi / ESP32 / RP2040 / STM32 / Pyboard)
 - [06 · Examples](06_examples.md) — scenarios for BASIC, including
   master-side bidirectional metering
 - [09 · API Reference](09_api_reference.md) — the full public API
-
-
----
-
-[← Overview](01_overview.md) | [Contents](README.md) | [Sensor Selection →](03_sensor_selection.md)

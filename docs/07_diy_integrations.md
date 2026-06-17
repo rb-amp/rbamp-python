@@ -1,34 +1,33 @@
 # 07 · DIY integrations
 
 How to feed `rbamp` readings into popular self-hosted automation
-systems from a Python host. For each platform there is a minimal
-Python script plus the corresponding configuration on the platform
-side.
+systems from a Python host. For each platform: a minimal Python
+script plus the matching configuration on the platform side.
 
 Cloud / commercial integrations (AWS IoT, Azure, GCP, InfluxDB
-Cloud) — [08 · Cloud integrations](08_cloud_integrations.md).
+Cloud) are covered in [08 · Cloud integrations](08_cloud_integrations.md).
 
 | Platform | Transport | Auto-discovery | Python MQTT client |
 |---|---|---|---|
 | Home Assistant | MQTT | yes (HA MQTT Discovery) | `paho-mqtt` (CPython) / `umqtt.simple` (uPy) |
-| Node-RED | MQTT (or HTTP) | manual flow | same as above |
-| OpenHAB | MQTT (or REST) | manual `.things` | same as above |
+| Node-RED | MQTT (or HTTP) | manual flow | as above |
+| OpenHAB | MQTT (or REST) | manual `.things` | as above |
 | Domoticz | MQTT (auto) or HTTP | yes (MQTT plugin) | `paho-mqtt` or `requests` |
 | InfluxDB OSS + Grafana | HTTP line-protocol | no | `requests` (CPython) / `urequests` (uPy) |
 
-> Ready-made scripts for Home Assistant are in
-> [`examples_cpython/09_ha_autodiscovery.py`](../rbamp/examples_cpython/09_ha_autodiscovery.py)
+> Ready-made scripts for Home Assistant live in
+> [`examples_cpython/09_ha_autodiscovery.py`](https://github.com/rb-amp/rbamp-python)
 > (CPython, SIGTERM-aware daemon) and
-> [`examples_upy/10_ha_autodiscovery.py`](../rbamp/examples_upy/10_ha_autodiscovery.py)
+> [`examples_upy/10_ha_autodiscovery.py`](https://github.com/rb-amp/rbamp-python)
 > (MicroPython).
 
 ---
 
 ## Home Assistant — MQTT Auto-discovery
 
-HA MQTT Discovery automatically creates the device and sensors when
-your Python script publishes the config topics. No YAML edits in HA
-are needed.
+HA MQTT Discovery automatically creates the device and its sensors
+once your Python script publishes the config topics. No YAML edits
+in HA are required.
 
 ### CPython version (via `paho-mqtt`)
 
@@ -167,42 +166,41 @@ with RbAmp(i2c, 0x50) as dev:
 ### Result in HA
 
 A few seconds after the first publish, HA automatically creates a
-device named "Mains rbAmp" with 6 sensors (Voltage, Current, Power,
-Energy, Frequency, Power Factor). The Energy sensor has
-`state_class: total_increasing` and the correct `device_class` — the
-HA Energy Dashboard accepts it as a consumption source.
+device named "Mains rbAmp" with 6 sensors (Voltage, Current,
+Power, Energy, Frequency, Power Factor). The Energy sensor carries
+`state_class: total_increasing` and the correct `device_class`, so
+the HA Energy Dashboard accepts it as a consumption source.
 
 To remove the device from HA later, publish an empty payload to
-`homeassistant/sensor/.../config` (the retained flag clears the
-entry).
+`homeassistant/sensor/.../config` (the retained flag clears the entry).
 
 ### Multi-channel UI3
 
-Repeat `publish_discovery_sensor()` with suffixed keys for channels 1
-and 2:
+Repeat `publish_discovery_sensor()` with suffixed keys for channels
+1 and 2:
 
 ```python
 publish_discovery_sensor("current_1", "Current 1", "A",  "current", "measurement")
 publish_discovery_sensor("power_1",   "Power 1",   "W",  "power",   "measurement")
 publish_discovery_sensor("energy_1",  "Energy 1",  "Wh", "energy",  "total_increasing")
-# ...the same for _2
+# ...same for _2
 ```
 
-And extend the state JSON with the fields `"current_1"`, `"power_1"`,
+Then extend the state JSON with the fields `"current_1"`, `"power_1"`,
 `"energy_1"`, populated from `dev.read_current(1)` / `snap.avg_p[1]` /
-`dev.energy.wh(1)` (or `dev.current[1]` / `dev.power[1]` through the
+`dev.energy.wh(1)` (or from `dev.current[1]` / `dev.power[1]` via the
 `_ChannelProxy` property if you prefer).
 
-> On MicroPython, the asynchronous variant — the `mqtt_as` package
-> instead of `umqtt.simple` — provides built-in keepalive + reconnect
-> without a manual `mqtt.ping()`. See also Scenario 10 in
-> [06 · Examples](06_examples.md) (async streaming).
+> On MicroPython, the async variant — the `mqtt_as` package instead of
+> `umqtt.simple` — provides built-in keepalive + reconnect without a
+> manual `mqtt.ping()`. See also Scenario 10 in
+> [06 · Examples](06_examples.md) (async-streaming).
 
 ---
 
 ## Node-RED
 
-Subscribe to the Python publisher's MQTT topic in a flow:
+Subscribe to the MQTT topic of the Python publisher inside a flow:
 
 ```json
 [
@@ -229,10 +227,10 @@ Subscribe to the Python publisher's MQTT topic in a flow:
 ]
 ```
 
-Wire `rbamp_in → extract_power → rbamp_chart` and you get a real-time
-power chart. Do the same for energy / voltage / PF.
+Wire `rbamp_in → extract_power → rbamp_chart` and you get a
+real-time power chart. Do the same for energy / voltage / PF.
 
-If Node-RED runs on the same Pi as the MQTT broker, use the host
+If Node-RED runs on the same Pi as the MQTT broker, set the host to
 `localhost`. For remote brokers, use `192.168.X.Y:1883` plus
 credentials if the broker requires auth.
 
@@ -276,10 +274,10 @@ above. The JSON payload is shared, only the consumer differs.
 The MQTT Auto-discovery plugin in Domoticz understands the same
 `homeassistant/...` discovery topics. Enable the plugin in the
 Domoticz settings, and the Python script from the HA section above
-will automatically register the device in Domoticz just as it does in
-HA.
+will start registering the device in Domoticz automatically, just
+as it does in HA.
 
-An alternative is Domoticz's native HTTP API via `requests`:
+The alternative is Domoticz's native HTTP API via `requests`:
 
 ### CPython
 
@@ -328,7 +326,7 @@ def publish_to_domoticz(idx, power, e_wh):
 ```
 
 Create a device in the Domoticz UI of type **General → kWh**
-(incremental counter), get its idx, and hardcode it in the script.
+(incremental counter), grab its idx, and hard-code it into the script.
 
 ---
 
@@ -398,8 +396,7 @@ def push_influx(u, p, e_wh):
         print("influx request failed:", e)
 ```
 
-In Grafana, add an InfluxDB data source, then a panel with a Flux
-query:
+In Grafana, add an InfluxDB datasource, then a panel with a Flux query:
 
 ```text
 from(bucket: "energy")
@@ -412,7 +409,7 @@ For a long-running soak deployment, additionally push diagnostic
 counters to a separate measurement:
 
 ```python
-# On MicroPython, with the backend exposed:
+# On MicroPython, with an explicit backend:
 diag_body = (
     "rbamp_diag,device=main "
     f"sanity_reject={dev.sanity_reject_count},"
@@ -422,32 +419,32 @@ diag_body = (
 # ...push to InfluxDB...
 ```
 
-(On CPython there are no retry counters — `SMBusBackend` has no retry
-layer. Push only `sanity_reject_count`.)
+(On CPython there are no retry counters — `SMBusBackend` has no
+retry layer. Push only `sanity_reject_count`.)
 
-You get a bus-health chart alongside the energy data.
+This gives you a bus-health chart alongside the energy data.
 
 ---
 
 ## Multi-platform — fan-out from a single Python host
 
 If you need HA Auto-discovery, InfluxDB, and Node-RED all at once,
-publish the state JSON once to MQTT and let each consumer subscribe to
-`rbamp/+/state`. The Python host talks only to the MQTT broker — the
-broker handles the fan-out to subscribers. Do not push from Python to
+publish the state JSON once to MQTT and let each consumer subscribe
+to `rbamp/+/state`. The Python host talks only to the MQTT broker —
+the broker fans out to subscribers itself. Don't push from Python to
 N HTTP endpoints directly: that couples the host to specific
 consumers.
 
-For very frequent streaming (5 Hz RT via `dev.power[0]`), run a
-sidecar Python script on the Pi that hosts the broker — it subscribes
-to the fast topic, decimates, and publishes to the slow topics. The
-main Python host (where `rbamp` runs) should stay focused on
+For a very high-rate stream (5 Hz RT via `dev.power[0]`), run a
+sidecar Python script on the Pi that hosts the broker — subscribe to
+the fast topic, decimate, and republish to the slow topics. The main
+Python host (the one running `rbamp`) should stay focused on
 `dev.read_*` calls without HTTP overhead.
 
 ### Asyncio variant (CPython)
 
-For CPython with asyncio, you can combine reading + multi-target
-publishing in a single task:
+For CPython with asyncio, you can combine the read + multi-target
+publish into a single task:
 
 ```python
 import asyncio, json
@@ -473,22 +470,16 @@ async def main():
 asyncio.run(main())
 ```
 
-`dev.stream_period()` is the package's async generator; see
-[09 · API reference](09_api_reference.md), the "Per-period metering"
-section.
+`dev.stream_period()` is the package's async generator — see
+[09 · API reference](09_api_reference.md), section "Per-period accounting".
 
 ---
 
 ## Links
 
 - [06 · Examples](06_examples.md) — the base scripts these
-  integrations are built on (including Scenario 10 "async streaming")
+  integrations build on (including Scenario 10 "async-streaming")
 - [08 · Cloud integrations](08_cloud_integrations.md) — AWS IoT /
   Azure / GCP / InfluxDB Cloud / generic webhook
-- [10 · Troubleshooting](10_troubleshooting.md) — patterns for
-  MQTT disconnect, signal handling, TLS heap budget
-
-
----
-
-[← Examples](06_examples.md) | [Contents](README.md) | [Cloud Integrations →](08_cloud_integrations.md)
+- [10 · Troubleshooting](10_troubleshooting.md) — MQTT-disconnect
+  patterns, signal handling, TLS heap budget
