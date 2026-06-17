@@ -1,74 +1,97 @@
-# rbamp — Python client for rbAmp I²C AC sensor / dimmer modules
+# rbamp-python
 
-[![PyPI version](https://img.shields.io/pypi/v/rbamp.svg)](https://pypi.org/project/rbamp/)
-[![protocol: 1.2](https://img.shields.io/badge/protocol-1.2-blue)](https://rbamp.com/docs/modules-basic-standard-api-reference)
-[![runtimes: CPython · MicroPython](https://img.shields.io/badge/runtimes-CPython%20%C2%B7%20MicroPython-brightgreen)](#installation)
-[![license: MIT](https://img.shields.io/badge/license-MIT-lightgrey)](LICENSE)
+[![PyPI](https://img.shields.io/pypi/v/rbamp)](https://pypi.org/project/rbamp/)
+[![Python](https://img.shields.io/pypi/pyversions/rbamp)](https://pypi.org/project/rbamp/)
+[![MicroPython](https://img.shields.io/badge/MicroPython-1.20%2B-blue)](https://docs.micropython.org/)
+[![License](https://img.shields.io/badge/License-MIT-green)](LICENSE)
 
-Unified Python client for the rbAmp I²C AC sensor / dimmer module — runs on
-both **MicroPython** (ESP32 / RP2040 / STM32 / Pyboard via `machine.I2C`) and
-**CPython** (Linux SBCs — Raspberry Pi / Orange Pi / Rock Pi via `smbus2`)
-from a single source. Backend is auto-selected from the bus object you pass
-to `RbAmp` — no platform flag, no import switch.
+Cross-backend Python client for the **rbAmp** I²C AC energy-monitor module.
+One package, two backends — runs on **CPython** (Linux SBC via `smbus2`) and
+**MicroPython** (ESP32 / RP2040 / STM32 via `machine.I2C`). The backend is selected
+automatically based on the bus object you pass to `RbAmp`.
 
-## Installation
+## Install
 
-### CPython (Linux SBC)
+CPython (PyPI):
 ```bash
-pip install rbamp
+pip install rbamp[bench]   # the bench extra pulls smbus2 for the /dev/i2c-N path
 ```
 
-### MicroPython (ESP32 / RP2040 / STM32)
+MicroPython (mpremote + mip):
 ```bash
 mpremote mip install github:rb-amp/rbamp-python
 ```
 
-## Quick start
+## Quick start (CPython)
 
-### CPython on Raspberry Pi
 ```python
 from smbus2 import SMBus
 from rbamp import RbAmp
 
 with SMBus(1) as bus:
     with RbAmp(bus, 0x50) as dev:
-        print(dev.voltage, "V")
+        print(f"variant = {dev.read_variant()}  label = {dev.read_label()!r}")
+        print(f"U = {dev.voltage:.1f} V  P[0] = {dev.power[0]:.2f} W")
         snap = dev.read_period_snapshot()
-        print(dev.energy.wh(0), "Wh")
+        print(f"Wh = {dev.energy.wh(0):.4f}")
 ```
 
-### MicroPython on ESP32
+## Quick start (MicroPython on ESP32)
+
 ```python
 from machine import I2C, Pin
 from rbamp import RbAmp
 
+# Use 50 kHz on ESP32 — the IDF i2c_master driver beneath machine.I2C can NACK
+# intermittently at 100 kHz. NACK-retry is built into the MicroPython backend by default.
 i2c = I2C(0, scl=Pin(22), sda=Pin(21), freq=50_000)
 with RbAmp(i2c, 0x50) as dev:
-    print(dev.voltage, "V")
+    print(f"variant = {dev.read_variant()}  label = {dev.read_label()!r}")
     snap = dev.read_period_snapshot()
-    print(dev.energy.wh(0), "Wh")
+    print(f"Wh = {dev.energy.wh(0):.4f}")
 ```
 
-## Bus speed on ESP32
+## Multi-module fleet (host-side manager)
 
-ESP32 platforms (MicroPython on ESP32 share the same low-level driver as
-ESP-IDF) require **50 kHz** I²C bus speed for reliable operation. The
-library applies automatic per-byte retry by default to absorb intermittent
-NACK bursts. See examples for typical workloads.
+```python
+from rbamp import RbAmpFleet
+
+fleet = RbAmpFleet(bus)
+fleet.scan()                          # adopt every rbAmp on the bus
+fleet.enable_gc_all(group=0)          # opt every module into GC latch
+
+tick = fleet.gc_latch(group=0)        # broadcast 5-byte GC frame
+sync = fleet.check_sync(expected_tick=tick)
+for s in sync:
+    if not s.in_sync:
+        print(f"  WARN: 0x{s.addr:02X} dropped")
+
+print(f"total: {fleet.total_power():.1f} W, {fleet.total_energy_wh():.3f} Wh")
+```
 
 ## Examples
 
-- `rbamp/examples_cpython/` — 10 CPython examples (smbus2 / MQTT / REST /
-  rotating-file logger / Home Assistant autodiscovery / systemd service)
-- `rbamp/examples_upy/` — 10 MicroPython examples (quick-read / OLED /
-  multi-module / MQTT / async streaming / deep-sleep / bidirectional energy /
-  HA autodiscovery)
+The package ships 20 runnable examples — 10 each for CPython and MicroPython:
+
+| #  | CPython                             | MicroPython                          |
+|----|-------------------------------------|--------------------------------------|
+| 01 | quick read                          | quick read                           |
+| 02 | period meter                        | OLED period meter                    |
+| 03 | multi-module broadcast              | multi-module                         |
+| 04 | MQTT publisher                      | MQTT                                 |
+| 05 | bidirectional energy                | async streaming                      |
+| 06 | REST gateway                        | deep sleep                           |
+| 07 | home energy balance                 | bidirectional energy                 |
+| 08 | rotating file logger                | home energy balance                  |
+| 09 | Home Assistant MQTT autodiscovery   | event detection logger               |
+| 10 | systemd service                     | Home Assistant MQTT autodiscovery    |
+
+See [`rbamp/examples_cpython/`](rbamp/examples_cpython/) and [`rbamp/examples_upy/`](rbamp/examples_upy/).
 
 ## Documentation
 
-- In-repo guide: [docs/](docs/README.md) — overview, hardware, quickstart, API reference, troubleshooting
-- Hosted protocol spec & API reference: <https://rbamp.com/docs/modules-basic-standard-api-reference>
+Full user documentation: https://www.rbamp.com/docs/modules-basic-standard-python-overview
 
 ## License
 
-MIT. See [LICENSE](LICENSE).
+MIT — see [LICENSE](LICENSE).

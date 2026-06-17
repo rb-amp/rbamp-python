@@ -18,7 +18,7 @@ The protocol invariants from SPEC §6, §7, §10, §11 are enforced here:
 import math
 import struct
 
-from . import _registers as R
+from . import _registers_v2 as R
 from ._snapshot import (
     RbAmpSnapshot,
     RbAmpPeriodSnapshot,
@@ -263,31 +263,43 @@ class RbAmp:
         """Current I2C slave address — updates after commit_address_change()."""
         return self._addr
 
+    # SKU map per truth-doc §1.2 — authoritative source for variant id.
+    # (channels, topology_const, has_voltage_hw)
+    _SKU_MAP = {
+        1: (1, TOPOLOGY_SINGLE,      True),   # UI1
+        2: (2, TOPOLOGY_SPLIT_PHASE, True),   # UI2
+        3: (3, TOPOLOGY_THREE_PHASE, True),   # UI3
+        4: (1, TOPOLOGY_SINGLE,      False),  # I1
+        5: (2, TOPOLOGY_SPLIT_PHASE, False),  # I2
+        6: (3, TOPOLOGY_THREE_PHASE, False),  # I3
+    }
+
     def _detect_variant(self):
         """Variant auto-detection — runs once in begin().
 
-        Per SPEC §8:
+        Authoritative SKU byte from ``REG_HW_VARIANT`` (0x55) per
+        truth-doc §1.2. Old NACK-probe approach (ACKing ``0xC2``/``0xC6``)
+        is BROKEN — firmware returns ``0x00`` on any unmapped read and
+        NEVER NACKs; the probe is incapable of distinguishing variants.
 
-        - ACK on the channel-2 avg-power register (0xC6) -> THREE_PHASE
-        - else ACK on the channel-1 avg-power register (0xC2) -> SPLIT_PHASE
-        - else SINGLE
-        - voltage RMS register (0x86) > 1.0 V -> has voltage hardware
+        Mapping (1..6 only — anything else means not a rbAmp module
+        or firmware unknown)::
+
+            1 = UI1 (1 ch, voltage)         4 = I1 (1 ch, no voltage)
+            2 = UI2 (2 ch, voltage)         5 = I2 (2 ch, no voltage)
+            3 = UI3 (3 ch, voltage)         6 = I3 (3 ch, no voltage)
+
+        Raises:
+            RbAmpVersionError: REG_HW_VARIANT not in 1..6.
         """
-        if self._io.register_acks(self._addr, R.REG_V03_PERIOD_AVG_P_F2):
-            self._channels = 3
-            self._topology = TOPOLOGY_THREE_PHASE
-        elif self._io.register_acks(self._addr, R.REG_V03_PERIOD_AVG_P_F1):
-            self._channels = 2
-            self._topology = TOPOLOGY_SPLIT_PHASE
-        else:
-            self._channels = 1
-            self._topology = TOPOLOGY_SINGLE
-
-        try:
-            u_rms = self._read_float_le(R.REG_V03_U_RMS)
-            self._has_voltage_hw = u_rms > 1.0
-        except RbAmpError:
-            self._has_voltage_hw = False
+        hw = self._io.read_byte(self._addr, R.REG_HW_VARIANT)
+        sku = self._SKU_MAP.get(hw)
+        if sku is None:
+            raise RbAmpVersionError(
+                "REG_HW_VARIANT = 0x{:02X} — not a known rbAmp SKU (expected 1..6)"
+                .format(hw)
+            )
+        self._channels, self._topology, self._has_voltage_hw = sku
 
     # =====================================================================
     # Real-time reads (SPEC §12 — RT block, 200 ms refresh on device)
@@ -304,33 +316,33 @@ class RbAmp:
         """
         if phase != 0:
             raise RbAmpParamError("phase must be 0 (only phase 0 supported)")
-        return self._read_float_le(R.REG_V03_U_RMS)
+        return self._read_float_le(R.REG_V03_U_RMS, kind="u")
 
     def read_voltage_peak(self, phase=0):
         """Read peak voltage (wire reg 0x8A) in V."""
         if phase != 0:
             raise RbAmpParamError("phase must be 0")
-        return self._read_float_le(R.REG_V03_U_PEAK)
+        return self._read_float_le(R.REG_V03_U_PEAK, kind="u")
 
     def read_current(self, ch=0):
         """Read RMS current for one channel (wire reg 0x8E + 4·ch) in A."""
         self._check_channel(ch)
-        return self._read_float_le(R.REG_V03_I0_RMS + ch * 4)
+        return self._read_float_le(R.REG_V03_I0_RMS + ch * 4, kind="i")
 
     def read_current_peak(self, ch=0):
         """Read peak current for one channel (wire reg 0x9A + 4·ch) in A."""
         self._check_channel(ch)
-        return self._read_float_le(R.REG_V03_I0_PEAK + ch * 4)
+        return self._read_float_le(R.REG_V03_I0_PEAK + ch * 4, kind="i")
 
     def read_power(self, ch=0):
         """Read real power for one channel (wire reg 0xA6 + 4·ch) in W (signed)."""
         self._check_channel(ch)
-        return self._read_float_le(R.REG_V03_P0_REAL + ch * 4)
+        return self._read_float_le(R.REG_V03_P0_REAL + ch * 4, kind="p")
 
     def read_power_factor(self, ch=0):
         """Read power factor for one channel (wire reg 0xB2 + 4·ch) in -1..+1."""
         self._check_channel(ch)
-        return self._read_float_le(R.REG_V03_PF0 + ch * 4)
+        return self._read_float_le(R.REG_V03_PF0 + ch * 4, kind="pf")
 
     def read_frequency(self):
         """Read mains frequency (REG_AC_FREQ, 0x20) in Hz."""
@@ -425,15 +437,15 @@ class RbAmp:
         self._check_channel(ch)
         # Per SPEC §7: register addresses are non-contiguous.
         reg = (
-            R.REG_V03_PERIOD_AVG_P_F0,
-            R.REG_V03_PERIOD_AVG_P_F1,
-            R.REG_V03_PERIOD_AVG_P_F2,
+            R.REG_V03_PERIOD_AVG_P,       # ch0 (0xDC)
+            R.REG_V03_PERIOD_AVG_P_CH1,   # ch1 (0xC2)
+            R.REG_V03_PERIOD_AVG_P_CH2,   # ch2 (0xC6)
         )[ch]
-        return self._read_float_le(reg)
+        return self._read_float_le(reg, kind="p")
 
     def read_period_max_power(self):
         """Read the channel-0 peak-power-per-period register (0xE0) in W."""
-        return self._read_float_le(R.REG_V03_PERIOD_MAX_P_F0)
+        return self._read_float_le(R.REG_V03_PERIOD_MAX_P, kind="p")
 
     def read_period_latch_ms(self):
         """Read the period-latch-duration register (0xEC) — diagnostic (ms).
@@ -472,6 +484,18 @@ class RbAmp:
         if not skip_latch:
             self._io.write_byte(self._addr, R.REG_COMMAND, R.CMD_LATCH_PERIOD)
 
+        # L9 anti-revert: master_dt_ms is the MASTER wall-clock interval
+        # since the last CONSUMED-read (successful latch+read), NOT chip-
+        # reported latch_ms (0xEC). Chip latch_ms under-counts ~26-27%
+        # (HW-validated on every sister library bench, due to timer-ISR
+        # starvation in the module firmware) and is DIAGNOSTIC-ONLY —
+        # never feed it into energy integration. Stale-hold: on
+        # PERIOD_VALID=0 we do NOT advance _last_latch_ms, so the next
+        # successful latch's master_dt covers the full multi-period
+        # interval. Firmware preserves the accumulator across empty
+        # latches, so avg_p reported then is the average power over that
+        # full interval → integration is correct. Do NOT revert to chip
+        # period_ms here — see L9 callout.
         now_ms = self._io.now_ms()
         out = RbAmpPeriodSnapshot()
         if self._have_last_latch:
@@ -480,7 +504,7 @@ class RbAmp:
         self._io.sleep_ms(settle_ms)
 
         if not self.is_period_valid():
-            self._log_info("period STALE — discarded")
+            self._log_info("period STALE — discarded (anchor held; next success covers full interval)")
             raise RbAmpStaleError("period snapshot is stale")
 
         for ch in range(self._channels):
@@ -489,6 +513,9 @@ class RbAmp:
         out.latch_ms = self.read_period_latch_ms()
         out.valid = True
 
+        # Advance the anchor only on a CONSUMED read. Stale-hold keeps the
+        # previous anchor, letting energy.tick() integrate the full multi-
+        # period dt once we recover.
         self._last_latch_ms = now_ms
         self._have_last_latch = True
         self._energy.tick(out, self._channels)
@@ -582,75 +609,129 @@ class RbAmp:
         self._io.write_byte(self._addr, R.REG_SENSOR_CLASS, cls_int)
         self.save_gains()
 
+    # Per-sensor-class accepted CT codes (v1.3 truth-doc §7 + root seed §3).
+    # SCT-013 SKU map: 1=-005, 2=-010, 3=-030, 4=-050, 5=-100, 6=-020, 7=-060.
+    # Codes 5 + 7 reserved/uncharacterised on v1.3 firmware → ERR_PARAM.
+    # NOT contiguous — fast-fail client-side.
+    _CT_ACCEPTED = {
+        # RbAmpSensorClass.SCT_013    -> {1,2,3,4,6}
+        # RbAmpSensorClass.WIRED_CT   -> {1,2,3}
+        # RbAmpSensorClass.BUILTIN_CT -> {}   (no codes valid yet)
+        1: frozenset({1, 2, 3, 4, 6}),
+        2: frozenset({1, 2, 3}),
+        3: frozenset(),
+    }
+
+    def _validate_ct_code(self, code):
+        """v1.3 A1 fast-fail: code must be in the accepted set for the
+        currently-pinned sensor class. Firmware is ultimate authority — this
+        is just a client-side early reject so the user doesn't burn a flash
+        write to hear ERR_PARAM back from the device.
+
+        Skip on v1.0/v1.1 firmware (REG_VERSION < 0x03) and on v1.2 where
+        the firmware accepts the full {1..5} range as legacy behaviour.
+        """
+        fw = self._io.read_byte(self._addr, R.REG_VERSION)
+        if fw < 0x04:  # pre-v1.3
+            if code < 1 or code > 5:
+                raise RbAmpParamError(
+                    "CT model code must be 1..5 on v1.0/v1.1/v1.2 firmware, got {}".format(code))
+            return
+        cls = self._io.read_byte(self._addr, R.REG_SENSOR_CLASS)
+        accepted = self._CT_ACCEPTED.get(cls, frozenset())
+        if code not in accepted:
+            raise RbAmpParamError(
+                "CT model code {} not accepted for sensor class {} on v1.3 firmware; "
+                "accepted: {}".format(code, cls, sorted(accepted) or "{} (none)"))
+
     def set_ct_model(self, code):
-        """Set the SCT-013 CT model on channel 0 (legacy single-arg form).
+        """Set the CT model on channel 0 (legacy single-arg form).
 
-        Writes ``REG_CT_MODEL`` (0x05), issues ``CMD_SAVE_GAINS``, waits
-        700 ms for the flash erase + write cycle. Blocking.
+        Writes ``REG_CT_MODEL``, issues ``CMD_SET_CT_MODEL_CH0`` (v1.3+),
+        waits 5 ms, then ``CMD_SAVE_GAINS``. Blocking.
 
-        Equivalent to ``set_ct_model_ch(0, code)`` on v1.2+ firmware
-        (sensor-class precondition applies — see :meth:`set_sensor_class`).
-        On v1.0 / v1.1 firmware behaves identically to pre-v1.1.0 library
-        versions (no guard).
-
-        For multi-channel modules (UI2 / UI3 / I2 / I3) use
-        :meth:`set_ct_model_ch` instead.
+        Equivalent to ``set_ct_model_ch(0, code)``. For multi-channel
+        modules (UI2 / UI3 / I2 / I3) use :meth:`set_ct_model_ch` instead.
 
         Args:
-            code (int): 1=SCT_013_005 .. 5=SCT_013_100.
+            code (int): SCT-013 SKU code per :meth:`_validate_ct_code`.
+                v1.3 accepted set depends on the pinned sensor class:
+                SCT_013 → {1, 2, 3, 4, 6}; WIRED_CT → {1, 2, 3};
+                BUILTIN_CT → ∅. Legacy v1.x firmware → {1..5}.
 
         Raises:
-            RbAmpParamError: code out of range.
+            RbAmpParamError: code not accepted for current class.
             RbAmpModeError: v1.2+ firmware with sensor class still UNSET.
         """
-        if code < 1 or code > 5:
-            raise RbAmpParamError("CT model code must be 1..5, got {}".format(code))
         self._check_v12_sensor_class_pinned()
+        self._validate_ct_code(code)
+        # Wire-canon (same as set_ct_model_ch for ch0): REG → CMD → 5 ms → SAVE
         self._io.write_byte(self._addr, R.REG_CT_MODEL, code)
+        self._io.write_byte(self._addr, R.REG_COMMAND, R.CMD_SET_CT_MODEL_CH0)
+        self._io.sleep_ms(5)
         self.save_gains()
 
     def set_ct_model_ch(self, channel, code):
-        """Set the SCT-013 CT model on a specific channel (v1.2+ firmware).
+        """Set the CT model on a specific channel (v1.2+ firmware).
 
-        Writes the per-channel ``CMD_SET_CT_MODEL_CH<N>`` opcode + the model
-        code via ``REG_CT_MODEL``, issues ``CMD_SAVE_GAINS``, waits 700 ms.
-        Blocking.
+        Wire-canon order (truth-doc §7, sister arduino c5726bc / esp_idf
+        65c572b): ``REG_CT_MODEL = code → CMD_SET_CT_MODEL_CH<N> → 5 ms
+        settle → CMD_SAVE_GAINS`` (700 ms flash window). Blocking.
 
-        .. warning::
-            Multi-channel call order matters. Writing ``REG_CT_MODEL`` also
-            triggers the device-side legacy direct-write callback which
-            applies the preset to channel 0 unconditionally. So
-            ``set_ct_model_ch(1, code)`` writes ``code``'s preset to
-            channel 1 AS INTENDED, but also clobbers channel 0 to the same
-            preset as a side-effect. To configure all channels with
-            different models, **call the higher channel indices FIRST**::
-
-                dev.set_ct_model_ch(2, 5)  # ch2 = SCT-013-100 (clobbers ch0 → 5)
-                dev.set_ct_model_ch(1, 3)  # ch1 = SCT-013-030 (clobbers ch0 → 3)
-                dev.set_ct_model_ch(0, 1)  # ch0 = SCT-013-005 (final ch0 preset)
-
-            Final state: ch0=preset 1, ch1=preset 3, ch2=preset 5.
+        **Multi-channel call order** (truth-doc A1, v1.3 firmware):
+        order-INDEPENDENT. Each call binds ``code`` only to ``channel``;
+        ``REG_CT_MODEL`` is pure staging on v1.3 firmware (the legacy
+        direct-write side-effect on ch0 was removed). On v1.0/v1.1
+        firmware the legacy clobber side-effect still applied — callers
+        targeting both legacy and v1.3 should iterate channels in
+        descending order as a defensive pattern.
 
         Args:
             channel (int): 0..2 (limited by hardware variant).
-            code (int): 1=SCT_013_005 .. 5=SCT_013_100.
+            code (int): CT model code; v1.3 firmware accepts a per-class
+                subset (see :meth:`_validate_ct_code`).
 
         Raises:
-            RbAmpParamError: channel outside 0..2 or code outside 1..5.
+            RbAmpParamError: channel outside 0..2 or code not accepted
+                for the pinned sensor class.
             RbAmpModeError: v1.2+ firmware with sensor class still UNSET.
         """
         if channel < 0 or channel > 2:
             raise RbAmpParamError(
                 "channel must be 0..2, got {}".format(channel)
             )
-        if code < 1 or code > 5:
-            raise RbAmpParamError("CT model code must be 1..5, got {}".format(code))
         self._check_v12_sensor_class_pinned()
-        # Per-channel select opcode (0x28/0x29/0x2A) primes the device-side
-        # callback to apply the next REG_CT_MODEL write to the target channel.
-        self._io.write_byte(self._addr, R.REG_COMMAND, R.CMD_SET_CT_MODEL_CH0 + channel)
+        self._validate_ct_code(code)
+        # Wire-canon: REG first (lands in callback's pending-code register),
+        # CMD second (consumes the pending code and writes the per-channel
+        # preset), then 5 ms settle so device-side preset application
+        # completes before SAVE flashes. Inverted order silently fails to
+        # apply (CMD primes with stale code) — sister arduino/esp_idf use
+        # this order, HW-validated.
         self._io.write_byte(self._addr, R.REG_CT_MODEL, code)
+        self._io.write_byte(self._addr, R.REG_COMMAND, R.CMD_SET_CT_MODEL_CH0 + channel)
+        self._io.sleep_ms(5)
         self.save_gains()
+
+    def read_ct_model_ch(self, channel):
+        """Read the CT model code APPLIED on the given channel (v1.3 mirror).
+
+        Reads the verify-mirror registers ``REG_CT_MODEL_CH0/1/2`` (0x51-0x53)
+        per truth-doc §7.3. Useful for read-back verification after
+        :meth:`set_ct_model_ch` and for fleet health-checks.
+
+        Args:
+            channel (int): 0..2.
+
+        Returns:
+            int: Applied CT model code (0 = unset).
+
+        Raises:
+            RbAmpParamError: channel outside 0..2.
+        """
+        if channel < 0 or channel > 2:
+            raise RbAmpParamError("channel must be 0..2, got {}".format(channel))
+        return self._io.read_byte(self._addr, R.REG_CT_MODEL_CH0 + channel)
 
     def _check_v12_sensor_class_pinned(self):
         """Raise RbAmpModeError if v1.2+ firmware has REG_SENSOR_CLASS == UNSET.
@@ -682,31 +763,29 @@ class RbAmp:
         self._io.sleep_ms(R.SETTLE_MS_SAVE_GAINS)
 
     def prepare_address_change(self, new_addr):
-        """Arm an I2C address change (step 1 of 2).
+        """Arm an I2C address change (step 1 of 2) — v1.3 two-phase commit.
 
         Validates the new address range and records the arm timestamp
         internally. Caller must call :meth:`commit_address_change`
         within 5 seconds.
 
-        .. warning::
-            The module must be in a factory-controlled provisioning mode
-            for the address change to take effect. On standard production
-            modules :meth:`commit_address_change` returns
-            :class:`RbAmpModeError`. Use only when explicitly briefed.
+        v1.3 canon (truth-doc §6.1): two-phase commit is **PRODUCTION-OK**
+        — no provisioning-mode requirement. The arm consists of two
+        atomic device writes performed by :meth:`commit_address_change`:
+
+        1. ``REG_I2C_ADDRESS = candidate`` (lands in RAM, not persisted).
+        2. ``REG_ADDR_COMMIT_MAGIC = 0xA5`` (arms commit; magic byte is
+           consumed/cleared by the device on commit attempt).
+        3. ``CMD_COMMIT_ADDR`` opcode 0x30 (persists to flash; opcode
+           refuses without armed magic = anti-fat-finger interlock).
+        4. ``CMD_RESET`` (new address active after reboot).
 
         Raises:
             RbAmpParamError: address out of range or equal to current.
-            RbAmpModeError: device not in the required provisioning mode.
         """
         if new_addr < 0x08 or new_addr > 0x77 or new_addr == self._addr:
             raise RbAmpParamError(
                 "new_addr must be in 0x08..0x77 and != current ({:#04x})".format(self._addr)
-            )
-        mode = self._io.read_byte(self._addr, R.REG_MODE)
-        if mode != 1:
-            raise RbAmpModeError(
-                "module is in production mode; address change requires "
-                "the factory provisioning mode"
             )
         self._pending_addr = new_addr
         self._pending_armed_ms = self._io.now_ms()
@@ -716,12 +795,15 @@ class RbAmp:
         """Commit the previously prepared address change (step 2 of 2).
 
         Must be called within 5 seconds of :meth:`prepare_address_change`.
-        Persists the new address to flash, resets the device, then updates
-        the internal address field. Bus unavailable for ~800 ms.
+        Performs the v1.3 two-phase commit sequence (truth-doc §6.1):
+        candidate → magic → CMD_COMMIT_ADDR → reset. Updates the internal
+        address field on success. Bus unavailable for ~1 s.
 
         .. warning::
-            Persists to flash. Same factory-provisioning-mode requirement
-            as :meth:`prepare_address_change`. Not a routine operation.
+            Persists to flash. Production-OK (no mode gate); the magic
+            byte ``0xA5`` written to ``REG_ADDR_COMMIT_MAGIC`` (0x31) is
+            the anti-fat-finger interlock — without it the opcode is
+            refused by firmware.
 
         Raises:
             RbAmpParamError: no change armed.
@@ -735,13 +817,24 @@ class RbAmp:
             raise RbAmpTimeoutError(
                 "address change arm expired ({} ms > 5000 ms)".format(elapsed)
             )
-        self._io.write_byte(self._addr, R.REG_I2C_ADDRESS, self._pending_addr)
-        self._io.write_byte(self._addr, R.REG_COMMAND, R.CMD_SAVE_GAINS)
-        self._io.sleep_ms(R.SETTLE_MS_SAVE_GAINS)
-        self._io.write_byte(self._addr, R.REG_COMMAND, R.CMD_RESET)
-        self._io.sleep_ms(R.SETTLE_MS_RESET)
-        self._addr = self._pending_addr
-        self._addr_change_armed = False
+        # v1.3 two-phase commit (truth-doc §6.1):
+        # (1) write candidate to REG_I2C_ADDRESS  → RAM only, not persisted
+        # (2) write magic 0xA5 to REG_ADDR_COMMIT_MAGIC  → arm commit
+        # (3) issue CMD_COMMIT_ADDR opcode 0x30  → persist + consume magic
+        # (4) issue CMD_RESET → reboot, new address active
+        # Arm state cleared in finally so a partial failure (NACK between
+        # writes) does NOT leave the library armed for an out-of-context
+        # retry that could overshoot — caller must re-prepare cleanly.
+        try:
+            self._io.write_byte(self._addr, R.REG_I2C_ADDRESS, self._pending_addr)
+            self._io.write_byte(self._addr, R.REG_ADDR_COMMIT_MAGIC, 0xA5)
+            self._io.write_byte(self._addr, R.REG_COMMAND, R.CMD_COMMIT_ADDR)
+            self._io.sleep_ms(R.SETTLE_MS_COMMIT_ADDR)
+            self._io.write_byte(self._addr, R.REG_COMMAND, R.CMD_RESET)
+            self._io.sleep_ms(R.SETTLE_MS_RESET)
+            self._addr = self._pending_addr
+        finally:
+            self._addr_change_armed = False
 
     def factory_reset(self):
         """Issue a factory reset and wait 1500 ms for the module to reboot.
@@ -763,25 +856,224 @@ class RbAmp:
         self._io.sleep_ms(R.SETTLE_MS_RESET)
 
     # =====================================================================
+    # Identity / capability (v1.3, truth-doc §1)
+    # =====================================================================
+
+    def read_variant(self):
+        """Read REG_HW_VARIANT (0x55) — authoritative SKU byte.
+
+        Returns:
+            int: 1=UI1, 2=UI2, 3=UI3, 4=I1, 5=I2, 6=I3; other = unknown.
+        """
+        return self._io.read_byte(self._addr, R.REG_HW_VARIANT)
+
+    def read_capability(self):
+        """Read REG_CAPABILITY (0x57, u16 LE) — feature bitmap.
+
+        Branch on capability bits, never on firmware-version heuristics
+        (truth-doc §1.4). Returns 0 on read failure.
+        """
+        return self._read_u16_le(R.REG_CAPABILITY)
+
+    def read_product_id(self):
+        """Read REG_PRODUCT_ID (0x54) — family byte.
+
+        Returns 0x01 = rbAmp sensor (the only family this lib supports).
+        Other values = different device family; library does not interpret.
+        """
+        return self._io.read_byte(self._addr, R.REG_PRODUCT_ID)
+
+    def read_uid(self):
+        """Read REG_UID (0x5C, 12 bytes) — 96-bit chip UID.
+
+        Returns:
+            bytes: 12-byte UID payload (little-endian 3×u32 from UID_BASE).
+        """
+        return bytes(
+            self._io.read_byte(self._addr, R.REG_UID + i) for i in range(12)
+        )
+
+    def read_label(self):
+        """Read REG_LABEL (0x68, 8 bytes) — user module label, ASCII zero-padded.
+
+        Returns:
+            str: Label as utf-8 string with trailing NULs stripped.
+                Empty string = unset.
+        """
+        raw = bytes(
+            self._io.read_byte(self._addr, R.REG_LABEL + i) for i in range(R.REG_LABEL_SIZE)
+        ).rstrip(b"\x00")
+        try:
+            return raw.decode("ascii", "replace")
+        except Exception:
+            return ""
+
+    def set_label(self, label):
+        """Set REG_LABEL (0x68, 8 bytes) — user module label.
+
+        Per L-006 + truth-doc §4: multi-byte register writes do NOT
+        auto-increment (F.13 hw-confirmed asymmetry). Must use a byte-loop
+        — block-write would only land the first byte.
+
+        Args:
+            label (str): ASCII label up to 8 chars. Longer truncated;
+                shorter is zero-padded.
+
+        Raises:
+            RbAmpParamError: label contains non-ASCII bytes.
+        """
+        try:
+            data = label.encode("ascii")
+        except UnicodeEncodeError:
+            raise RbAmpParamError("label must be ASCII, got {!r}".format(label))
+        if len(data) > R.REG_LABEL_SIZE:
+            data = data[: R.REG_LABEL_SIZE]
+        else:
+            data = data + b"\x00" * (R.REG_LABEL_SIZE - len(data))
+        # F.13 byte-loop: writes do NOT auto-increment. One transaction
+        # per byte. Block-write would land only data[0].
+        for i, b in enumerate(data):
+            self._io.write_byte(self._addr, R.REG_LABEL + i, b)
+        # Persist via CMD_SAVE_USER_CONFIG (production-OK per §8.1).
+        self._io.write_byte(self._addr, R.REG_COMMAND, R.CMD_SAVE_USER_CONFIG)
+        self._io.sleep_ms(R.SETTLE_MS_SAVE_USER_CONFIG)
+
+    # =====================================================================
+    # Error / event channel (v1.3)
+    # =====================================================================
+
+    def read_last_error(self):
+        """Read REG_ERROR (0x02) — outcome of the last write op.
+
+        Returns:
+            int: 0x00 = OK, 0xFA..0xFF error classes.
+        """
+        return self._io.read_byte(self._addr, R.REG_ERROR)
+
+    def read_event_flags(self):
+        """Read REG_EVENT_FLAGS (0x2A) — sticky event bitmap."""
+        return self._io.read_byte(self._addr, R.REG_EVENT_FLAGS)
+
+    def clear_event_flags(self, mask):
+        """Clear sticky event flags by write-1-to-clear mask."""
+        self._io.write_byte(self._addr, R.REG_EVENT_FLAGS, mask & 0xFF)
+
+    def has_error(self):
+        """True if EVENT_ERROR (bit3) is latched in REG_EVENT_FLAGS."""
+        return (self.read_event_flags() & R.EVENT_ERROR) != 0
+
+    def clear_error(self):
+        """Issue CMD_CLEAR_ERROR (0x31 opcode) — clears REG_ERROR + EVENT_ERROR bit."""
+        self._io.write_byte(self._addr, R.REG_COMMAND, R.CMD_CLEAR_ERROR)
+
+    # =====================================================================
+    # Fleet / GC (v1.3, truth-doc §5)
+    # =====================================================================
+
+    def read_fleet_config(self):
+        """Read REG_FLEET_CONFIG (0x27) — bit0=GC_ENABLE.
+
+        Effective only after CMD_RESET (GC ISR wired at boot).
+        """
+        return self._io.read_byte(self._addr, R.REG_FLEET_CONFIG)
+
+    def enable_gc(self, enable=True):
+        """Enable or disable General-Call latch reception, persisted (v1.3).
+
+        Read-modify-writes ``REG_FLEET_CONFIG`` (0x27) bit0, issues
+        ``CMD_SAVE_USER_CONFIG`` (production-OK), then ``CMD_RESET`` — the
+        GC ISR is wired only at boot, so a reset is mandatory for the
+        change to take effect. Blocking (~1 s: save 700 ms + reset
+        settle).
+
+        Args:
+            enable (bool): True to receive GC latches; False to opt out.
+        """
+        current = self.read_fleet_config()
+        new = (current | 0x01) if enable else (current & ~0x01)
+        if new == current:
+            # Bit already correct — no-op (avoids burning a flash write +
+            # 1 s bus-unavailable window on repeated calls).
+            return
+        self._io.write_byte(self._addr, R.REG_FLEET_CONFIG, new & 0xFF)
+        self._io.write_byte(self._addr, R.REG_COMMAND, R.CMD_SAVE_USER_CONFIG)
+        self._io.sleep_ms(R.SETTLE_MS_SAVE_USER_CONFIG)
+        self._io.write_byte(self._addr, R.REG_COMMAND, R.CMD_RESET)
+        self._io.sleep_ms(R.SETTLE_MS_RESET)
+
+    def set_group_id(self, group):
+        """Write REG_GROUP_ID (0x28). Persist via CMD_SAVE_USER_CONFIG to survive reset.
+
+        Args:
+            group (int): 0..255. 0 = respond to all-call only.
+
+        Raises:
+            RbAmpParamError: group outside 0..255.
+        """
+        if group < 0 or group > 255:
+            raise RbAmpParamError("group must be 0..255, got {}".format(group))
+        self._io.write_byte(self._addr, R.REG_GROUP_ID, group)
+
+    def read_group_id(self):
+        """Read REG_GROUP_ID (0x28)."""
+        return self._io.read_byte(self._addr, R.REG_GROUP_ID)
+
+    def read_gc_tick(self):
+        """Read REG_GC_TICK (0x59, u16 LE) — last accepted GC tick witness.
+
+        ``0xFFFF`` means no GC frame has been received since boot. Match
+        against the master's last broadcast tick to verify per-module
+        fleet sync.
+        """
+        return self._read_u16_le(R.REG_GC_TICK)
+
+    # =====================================================================
     # Static / multi-module
     # =====================================================================
 
     @staticmethod
-    def broadcast_latch(bus):
-        """I2C General-Call broadcast LATCH — sync multiple modules.
+    def broadcast_latch_group(bus, group=0, tick=0):
+        """I2C General-Call broadcast LATCH (v1.3, truth-doc §5.4).
 
-        Writes ``[REG_COMMAND, CMD_LATCH_PERIOD]`` to general-call address 0x00.
-        All rbAmp modules on the bus latch within microseconds. Master should
-        then time its own wall-clock dt and call
+        Transmits the 5-byte frame ``{0xA5, CMD_LATCH_PERIOD=0x27, group,
+        tick_lo, tick_hi}`` to general-call address ``0x00``. Every rbAmp
+        on the bus with ``REG_FLEET_CONFIG.bit0`` set (see
+        :meth:`enable_gc`) AND ``REG_GROUP_ID`` matching ``group`` (or
+        ``group == 0`` = all-call) latches its period accumulator
+        atomically and stores ``tick`` in ``REG_GC_TICK`` (0x59).
+
+        After the broadcast the master sleeps its settle window (≥50 ms
+        per SPEC §7) then calls
         ``read_period_snapshot(..., skip_latch=True)`` on each device.
+        Sync verification via :meth:`read_gc_tick` per module — must
+        match ``tick``; ``0xFFFF`` means that module did NOT receive the
+        frame (GC disabled, wrong group, or bus glitch).
+
+        Latch-only by firmware design: destructive opcodes
+        (``CMD_SAVE_*``, ``CMD_COMMIT_ADDR``, ``CMD_FACTORY_RESET``)
+        never honoured over General-Call.
 
         Args:
-            bus: An smbus2 or machine.I2C bus object (NOT an :class:`RbAmp` instance).
+            bus: An smbus2.SMBus (CPython) or machine.I2C (MicroPython)
+                bus — NOT an :class:`RbAmp` instance.
+            group (int): Group filter (0 = all-call). Module's
+                ``REG_GROUP_ID`` must equal this OR ``group == 0``.
+            tick (int): 16-bit window/tick counter stored in
+                ``REG_GC_TICK`` of each latching module.
 
         Returns:
-            bool: True if the general-call write succeeded. Some host
-            implementations refuse address 0x00 — verify on your platform.
+            bool: True if the frame was transmitted. Some host I²C
+            implementations refuse address 0x00 — verify on your
+            platform.
+
+        Raises:
+            RbAmpParamError: bus object not recognised, or group/tick
+                outside 0..255 / 0..0xFFFF.
         """
+        if group < 0 or group > 255:
+            raise RbAmpParamError("group must be 0..255, got {}".format(group))
+        if tick < 0 or tick > 0xFFFF:
+            raise RbAmpParamError("tick must be 0..0xFFFF, got {}".format(tick))
         if hasattr(bus, "readfrom_mem"):
             from ._io_micropython import MachineI2CBackend
             backend = MachineI2CBackend(bus)
@@ -789,8 +1081,24 @@ class RbAmp:
             from ._io_smbus import SMBusBackend
             backend = SMBusBackend(bus)
         else:
-            raise RbAmpParamError("Unrecognised bus object for broadcast_latch")
-        return backend.broadcast(bytes([R.REG_COMMAND, R.CMD_LATCH_PERIOD]))
+            raise RbAmpParamError("Unrecognised bus object for broadcast_latch_group")
+        # Canon frame: A5 27 group tick_lo tick_hi (5 bytes)
+        frame = bytes([0xA5, R.CMD_LATCH_PERIOD, group & 0xFF,
+                       tick & 0xFF, (tick >> 8) & 0xFF])
+        return backend.broadcast(frame)
+
+    @staticmethod
+    def broadcast_latch(bus):
+        """Legacy GC latch wrapper — calls :meth:`broadcast_latch_group` with
+        group=0, tick=0 (all-call, anonymous tick).
+
+        Prefer :meth:`broadcast_latch_group` for new code so witness checks
+        via :meth:`read_gc_tick` can verify per-module sync.
+
+        Returns:
+            bool: Result of the underlying 5-byte GC frame transmission.
+        """
+        return RbAmp.broadcast_latch_group(bus, group=0, tick=0)
 
     # =====================================================================
     # Diagnostics / logging
@@ -837,7 +1145,19 @@ class RbAmp:
         b3 = self._io.read_byte(self._addr, reg + 3)
         return b0 | (b1 << 8) | (b2 << 16) | (b3 << 24)
 
-    def _read_float_le(self, reg):
+    # Per-quantity loose-sanity ceilings (SPEC §B.5 + truth-doc):
+    # 230 V × 150 A < 30 kW headroom; PF allows transient overshoot
+    # to ±1.5 for noisy/edge cycles. Q reserved for v1.4 (reactive
+    # power) but limit shipped now to avoid future re-bump.
+    _SANITY_LIMIT = {
+        "u":  500.0,    # RMS voltage (V)
+        "i":  150.0,    # RMS current (A)
+        "p":  30000.0,  # Real power (W, signed)
+        "pf": 1.5,      # Power factor
+        "q":  30000.0,  # Reactive power (VAR, signed) — v1.4
+    }
+
+    def _read_float_le(self, reg, kind="p"):
         buf = bytes([
             self._io.read_byte(self._addr, reg),
             self._io.read_byte(self._addr, reg + 1),
@@ -845,17 +1165,20 @@ class RbAmp:
             self._io.read_byte(self._addr, reg + 3),
         ])
         value = struct.unpack("<f", buf)[0]
-        # SPEC §B.5 — loose sanity filter. Catches NaN / Inf / exotic ghost
-        # patterns that survive the per-byte retry (e.g. IDF i2c_master
-        # buffer-leak 0x3C2FFB3F = 1.962 V). NO physical lower bounds, so
-        # brownout / disconnect / off-grid states pass through unfiltered
-        # (those are critical user-visible conditions). Backend-agnostic on
-        # purpose — defensive at the sensor boundary.
-        if not math.isfinite(value) or math.fabs(value) > 10000.0:
+        # SPEC §B.5 + truth-doc loose sanity — per-quantity ceilings.
+        # Catches NaN / Inf / exotic ghost patterns surviving per-byte retry
+        # (e.g. IDF i2c_master buffer-leak 0x3C2FFB3F = 1.962 V). NO physical
+        # lower bounds — brownout / disconnect / off-grid pass through
+        # unfiltered (those are critical user-visible conditions).
+        # Per-quantity rather than a single |x|>10000 — the old uniform limit
+        # rejected legitimate P readings on ≥10 kW loads (230 V × 45 A ≈
+        # 10.35 kW). Defensive at the sensor boundary, backend-agnostic.
+        limit = self._SANITY_LIMIT.get(kind, 30000.0)
+        if not math.isfinite(value) or math.fabs(value) > limit:
             self.sanity_reject_count += 1
             raise RbAmpIOError(
-                "_read_float_le reg=0x{:02X} returned non-physical value {!r}".format(
-                    reg, value
+                "_read_float_le reg=0x{:02X} kind={} returned non-physical {!r}".format(
+                    reg, kind, value
                 )
             )
         return value

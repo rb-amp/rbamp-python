@@ -15,50 +15,94 @@ from ._snapshot import RbAmpIOError
 
 
 class SMBusBackend:
-    """Thin wrapper over ``smbus2.SMBus``.
+    """Thin wrapper over ``smbus2.SMBus`` with bus-robustness discipline.
 
     The wrapper exists so :mod:`_rbamp_core` can stay platform-agnostic.
     All methods take the slave address explicitly so the same backend can
     serve multiple :class:`RbAmp` instances on the same bus.
 
+    **Bus-robustness** (v1.3 / root seed §2): CPython hosts typically reach
+    the bus through a USB-I2C adapter or a Linux SBC's `/dev/i2c-N`. Both
+    paths return ``OSError`` on NACK but neither offers an in-driver spin-
+    retry. The backend implements a *generic* NACK-retry layer (default
+    ``retry_attempts=3``, ``retry_gap_ms=2``) plus a guard against
+    infinite-block conditions — failed reads/writes raise after the budget
+    is exhausted instead of looping forever. The ESP-IDF i2c_master spin
+    discipline (L8) is platform-specific to the IDF and not applicable
+    here; MicroPython-on-ESP32 keeps that discipline in
+    :class:`MachineI2CBackend`.
+
     Args:
         bus: An open ``smbus2.SMBus`` instance (or any duck-typed object
              exposing ``read_byte_data``, ``write_byte_data`` and
              ``write_i2c_block_data``).
+        retry_attempts: Max total attempts per single op (≥1). Default 3.
+        retry_gap_ms: Sleep between retries, in ms. Default 2 ms.
     """
 
-    def __init__(self, bus):
+    def __init__(self, bus, retry_attempts=3, retry_gap_ms=2):
         self._bus = bus
+        self._retry_attempts = max(1, int(retry_attempts))
+        self._retry_gap_ms = max(0, int(retry_gap_ms))
+        self.retry_count_total = 0          # silent recoveries logged
+        self.retry_exhaustion_count = 0     # exhausted attempts (final fail)
+
+    def reset_counters(self):
+        """Zero ``retry_count_total`` + ``retry_exhaustion_count``."""
+        self.retry_count_total = 0
+        self.retry_exhaustion_count = 0
 
     # ----- single-byte ops -------------------------------------------------
 
     def read_byte(self, addr, reg):
-        """Read one byte from ``reg`` on slave ``addr``.
+        """Read one byte from ``reg`` on slave ``addr`` with retry.
 
         Raises:
-            RbAmpIOError: on NACK or transport failure.
+            RbAmpIOError: after ``retry_attempts`` consecutive NACKs.
         """
-        try:
-            return self._bus.read_byte_data(addr, reg) & 0xFF
-        except OSError as exc:
-            raise RbAmpIOError(
-                "read_byte addr=0x{:02X} reg=0x{:02X} failed: {}".format(addr, reg, exc)
-            ) from exc
+        last_exc = None
+        for attempt in range(self._retry_attempts):
+            try:
+                value = self._bus.read_byte_data(addr, reg) & 0xFF
+                if attempt > 0:
+                    self.retry_count_total += attempt
+                return value
+            except OSError as exc:
+                last_exc = exc
+                if attempt + 1 < self._retry_attempts and self._retry_gap_ms:
+                    time.sleep(self._retry_gap_ms / 1000.0)
+        self.retry_count_total += self._retry_attempts - 1
+        self.retry_exhaustion_count += 1
+        raise RbAmpIOError(
+            "read_byte addr=0x{:02X} reg=0x{:02X} failed after {} attempts: {}".format(
+                addr, reg, self._retry_attempts, last_exc
+            )
+        ) from last_exc
 
     def write_byte(self, addr, reg, val):
-        """Write one byte ``val`` to ``reg`` on slave ``addr``.
+        """Write one byte ``val`` to ``reg`` on slave ``addr`` with retry.
 
         Raises:
-            RbAmpIOError: on NACK or transport failure.
+            RbAmpIOError: after ``retry_attempts`` consecutive NACKs.
         """
-        try:
-            self._bus.write_byte_data(addr, reg, val & 0xFF)
-        except OSError as exc:
-            raise RbAmpIOError(
-                "write_byte addr=0x{:02X} reg=0x{:02X} val=0x{:02X} failed: {}".format(
-                    addr, reg, val, exc
-                )
-            ) from exc
+        last_exc = None
+        for attempt in range(self._retry_attempts):
+            try:
+                self._bus.write_byte_data(addr, reg, val & 0xFF)
+                if attempt > 0:
+                    self.retry_count_total += attempt
+                return
+            except OSError as exc:
+                last_exc = exc
+                if attempt + 1 < self._retry_attempts and self._retry_gap_ms:
+                    time.sleep(self._retry_gap_ms / 1000.0)
+        self.retry_count_total += self._retry_attempts - 1
+        self.retry_exhaustion_count += 1
+        raise RbAmpIOError(
+            "write_byte addr=0x{:02X} reg=0x{:02X} val=0x{:02X} failed after {} attempts: {}".format(
+                addr, reg, val, self._retry_attempts, last_exc
+            )
+        ) from last_exc
 
     # ----- NACK probe (used by variant detection) --------------------------
 

@@ -9,6 +9,17 @@ See SPEC §7 for the integration formula::
 
     E_Wh[ch] += avg_p_W * master_dt_s / 3600
 
+**L9 anti-revert**: ``master_dt_s`` is the MASTER wall-clock dt computed
+by the caller (``time.monotonic()`` on CPython / ``time.ticks_ms()`` on
+MicroPython) across consecutive consumed reads, NOT the chip's self-
+reported period (``REG_V03_PERIOD_LATCH_MS`` 0xEC). The chip clock
+under-counts ~26-27% (HW-validated on every sister library bench, due
+to timer-ISR starvation in the module firmware). A previous revision
+wrongly used chip period_ms; reversed mid-2026. **Future porters: do
+NOT revert to chip-period — the accumulator is clock-agnostic and the
+master wall-clock is the billing dt.** ``RbAmpPeriodSnapshot.latch_ms``
+exists in the snapshot for diagnostics only.
+
 CPython uses 64-bit float natively; MicroPython on ESP32 also uses 64-bit
 float. Older MicroPython ports (esp8266 builds) may use 32-bit float, in
 which case users should reset() periodically on long-soak runs to avoid

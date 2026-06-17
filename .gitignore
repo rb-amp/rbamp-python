@@ -1,32 +1,10 @@
-# IDE / orchestration
 .claude/
 .mcp.json
-CLAUDE.md
-# Tests + bench (private)
-rbamp/tests/
-tools_bench/
-# Draft docs (RU; published EN docs live in repo-root docs/)
-rbamp/docs/
-rbamp/README.md
-# Python build / runtime
 __pycache__/
-*.py[cod]
-*$py.class
-*.egg-info/
+*.pyc
 .pytest_cache/
-.tox/
-.coverage
-.coverage.*
-htmlcov/
-build/
-dist/
-*.egg
-.venv/
-venv/
-# OS / editor
-.DS_Store
-Thumbs.db
+rbamp.egg-info/
 .vscode/
 .idea/
-*.swp
-*.swo
+.DS_Store
+Thumbs.db

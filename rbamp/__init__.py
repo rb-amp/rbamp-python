@@ -55,15 +55,21 @@ from ._snapshot import (
     RbAmpModeError,
     RbAmpVersionError,
 )
-from ._registers import (
-    RBAMP_REG_SCHEMA_CRC32,
-    RBAMP_PROTOCOL_VERSION,
+from ._fleet import (
+    RbAmpFleet,
+    RbAmpFleetPoll,
+    RbAmpFleetSync,
+    RBAMP_FLEET_MAX_MODULES,
+)
+from ._registers_v2 import (
+    RBAMP_REG_SCHEMA_CRC32_V2 as RBAMP_REG_SCHEMA_CRC32,
+    RBAMP_PROTOCOL_VERSION_V2 as RBAMP_PROTOCOL_VERSION,
     REGISTERS,
     COMMANDS,
 )
 
 #: Package version (PEP 440). Library SemVer is independent of protocol SemVer.
-__version__ = "1.1.0"
+__version__ = "1.3.0"
 
 #: Re-exported for convenience — protocol version this library was built for.
 __protocol_version__ = RBAMP_PROTOCOL_VERSION
@@ -71,6 +77,10 @@ __protocol_version__ = RBAMP_PROTOCOL_VERSION
 __all__ = (
     "RbAmp",
     "RbAmpEnergy",
+    "RbAmpFleet",
+    "RbAmpFleetPoll",
+    "RbAmpFleetSync",
+    "RBAMP_FLEET_MAX_MODULES",
     "RbAmpSnapshot",
     "RbAmpPeriodSnapshot",
     "TOPOLOGY_SINGLE",
