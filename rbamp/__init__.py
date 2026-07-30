@@ -69,7 +69,7 @@ from ._registers_v2 import (
 )
 
 #: Package version (PEP 440). Library SemVer is independent of protocol SemVer.
-__version__ = "1.3.0"
+__version__ = "1.3.1"
 
 #: Re-exported for convenience — protocol version this library was built for.
 __protocol_version__ = RBAMP_PROTOCOL_VERSION

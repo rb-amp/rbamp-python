@@ -1,21 +1,27 @@
 # SPDX-License-Identifier: MIT
 """
-Example 7 (CPython) — multi-module home energy balance via MQTT (paho).
+Example 7 (CPython) — multi-module home energy balance via MQTT (paho),
+coherent-latched with the v1.3 General-Call fleet path (``RbAmpFleet``).
 
 CPython twin of ``examples_upy/08_home_energy_balance.py``. Iterates a list
-of rbAmp slave addresses on a single SMBus, publishes per-device power and
-a whole-house sum under a configurable MQTT topic prefix.
+of rbAmp slave addresses on a single SMBus, latches every module together
+via one General-Call broadcast, publishes per-device power / Wh and a
+whole-house sum under a configurable MQTT topic prefix. The coherent
+latch is what makes the whole-house sum honest — every module integrates
+the same wall-clock window, no per-module drift.
 
 Topic layout (mirror of the uPy example):
-    home/energy/<device_label>/p_w
-    home/energy/<device_label>/wh_total
-    home/energy/sum/p_w
-    home/energy/sum/wh_total
+    home/energy/<device_label>/p_w        — instantaneous P (W) per device
+    home/energy/<device_label>/wh_total   — accumulated Wh, per device
+    home/energy/sum/p_w                   — whole-house P
+    home/energy/sum/wh_total              — whole-house Wh
+    home/energy/sync/in_sync              — how many modules caught the last tick
 
 Hardware:
     Linux SBC (RPi, Orange Pi, etc.) + 1..N rbAmp slaves at distinct
-    addresses. Assign addresses via the SPEC §10 two-step flow before first
-    use; once persisted to flash they stick.
+    addresses. Assign addresses once with the two-step
+    ``prepare_address_change`` / ``commit_address_change`` flow (persists
+    to flash) so they coexist on the shared bus.
 
 Dependencies:
     pip install rbamp smbus2 paho-mqtt
@@ -29,17 +35,23 @@ If ``MQTT_HOST`` env var is unset the script runs in print-only mode
 
 See also:
     - examples_upy/08_home_energy_balance.py (umqtt.simple twin)
-    - SPEC.md §10 (address change)
+    - examples_cpython/03_multi_module_broadcast.py (fleet GC primer, print-only)
 """
 import argparse
 import os
 import time
 
 from smbus2 import SMBus
-from rbamp import RbAmp, RbAmpStaleError
+from rbamp import (
+    RbAmp,
+    RbAmpFleet,
+    RbAmpError,
+    RbAmpStaleError,
+)
 
 
 TOPIC_PREFIX = "home/energy"
+GC_GROUP = 0
 
 
 def _make_mqtt():
@@ -82,43 +94,69 @@ def main():
     cli = _make_mqtt()
 
     bus = SMBus(args.bus)
-    devices = []
+    fleet = RbAmpFleet(bus)
+    labels = {}       # addr -> label
     for addr in addrs:
         try:
             dev = RbAmp(bus, addr)
             dev.begin()
-            label = "dev_{:02X}".format(addr)
-            devices.append((label, dev))
-            print("[init] {} ch={} topology={}".format(label, dev.channels, dev.topology))
-        except Exception as exc:
+        except RbAmpError as exc:
             print("[init] FAIL 0x{:02X}: {}".format(addr, exc))
+            continue
+        label = "dev_{:02X}".format(addr)
+        labels[addr] = label
+        fleet.add(dev)
+        print("[init] {} ch={} topology={}".format(label, dev.channels, dev.topology))
+
+    if len(fleet) == 0:
+        print("[init] no modules enrolled; exiting")
+        return
+
+    enabled = fleet.enable_gc_all(group=GC_GROUP)
+    print("[init] GC enabled on {}/{} module(s), group={}".format(
+        enabled, len(fleet), GC_GROUP))
 
     try:
         cyc = 0
         while args.cycles == 0 or cyc < args.cycles:
             cyc += 1
             time.sleep(args.cadence)
+
+            # One coherent latch across the whole fleet.
+            tick = fleet.gc_latch(group=GC_GROUP)
+            sync = fleet.check_sync(expected_tick=tick)
+
             sum_p = 0.0
             sum_wh = 0.0
-            for label, dev in devices:
+            in_sync = 0
+            for dev, s in zip(fleet, sync):
+                label = labels[dev.address]
+                if not s.in_sync:
+                    print("[cyc {:3d}] {} MISSED tick".format(cyc, label))
+                    continue
+                in_sync += 1
                 try:
-                    snap = dev.read_period_snapshot()
-                    p = sum(snap.avg_p[ch] for ch in range(dev.channels))
-                    wh = sum(dev.energy.wh(ch) for ch in range(dev.channels))
-                    sum_p += p
-                    sum_wh += wh
-                    print("[cyc {:3d}] {} P={:7.2f}W Wh={:8.4f}".format(
-                        cyc, label, p, wh))
-                    _publish(cli, "{}/{}/p_w".format(TOPIC_PREFIX, label), p)
-                    _publish(cli, "{}/{}/wh_total".format(TOPIC_PREFIX, label), wh)
+                    snap = dev.read_period_snapshot(settle_ms=0, skip_latch=True)
                 except RbAmpStaleError:
                     print("[cyc {:3d}] {} STALE".format(cyc, label))
-                except Exception as exc:
+                    continue
+                except RbAmpError as exc:
                     print("[cyc {:3d}] {} ERR: {}".format(cyc, label, exc))
+                    continue
+                p  = sum(snap.avg_p[ch] for ch in range(dev.channels))
+                wh = sum(dev.energy.wh(ch) for ch in range(dev.channels))
+                sum_p  += p
+                sum_wh += wh
+                print("[cyc {:3d}] {} P={:7.2f}W Wh={:8.4f}".format(
+                    cyc, label, p, wh))
+                _publish(cli, "{}/{}/p_w".format(TOPIC_PREFIX, label), p)
+                _publish(cli, "{}/{}/wh_total".format(TOPIC_PREFIX, label), wh)
+
             _publish(cli, "{}/sum/p_w".format(TOPIC_PREFIX), sum_p)
             _publish(cli, "{}/sum/wh_total".format(TOPIC_PREFIX), sum_wh)
-            print("[cyc {:3d}] SUM {:7.2f}W Wh_total={:.3f}".format(
-                cyc, sum_p, sum_wh))
+            _publish(cli, "{}/sync/in_sync".format(TOPIC_PREFIX), in_sync)
+            print("[cyc {:3d}] SUM {:7.2f}W Wh_total={:.3f}  in_sync={}/{}".format(
+                cyc, sum_p, sum_wh, in_sync, len(fleet)))
     finally:
         bus.close()
         if cli is not None:

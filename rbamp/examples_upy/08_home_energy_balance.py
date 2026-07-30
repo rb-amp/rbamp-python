@@ -1,24 +1,27 @@
 # SPDX-License-Identifier: MIT
 """
-Example 8 (MicroPython) — multi-module home energy balance via MQTT.
+Example 8 (MicroPython) — multi-module home energy balance via MQTT,
+coherent-latched with the v1.3 General-Call fleet path (``RbAmpFleet``).
 
-Iterates a list of rbAmp slave addresses on a single I2C bus, reads each
-device's period snapshot synchronously (broadcast LATCH would be ideal but
-v1 firmware disables general-call — see SPEC §9), then publishes per-device
-power plus a whole-house sum to MQTT under a configurable topic prefix.
+Iterates a list of rbAmp slave addresses on a single I2C bus, latches
+every module together via one General-Call broadcast, then publishes
+per-device power / Wh and a whole-house sum to MQTT under a configurable
+topic prefix. The coherent latch is what makes the whole-house sum
+honest — every module integrates the same wall-clock window, no
+per-module drift.
 
-Pattern fits a home-energy-monitor with one rbAmp per circuit breaker.
 Topic layout:
     home/energy/<device_label>/p_w        — instantaneous P (W) per device, per ch
     home/energy/<device_label>/wh_total   — accumulated Wh, per ch
-    home/energy/sum/p_w                   — whole-house P (sum across all)
+    home/energy/sum/p_w                   — whole-house P
     home/energy/sum/wh_total              — whole-house Wh
+    home/energy/sync/in_sync              — modules that caught the last tick
 
 Hardware:
-    ESP32 + Wi-Fi credentials in `secrets.py` (WIFI_SSID, WIFI_PASS,
+    ESP32 + Wi-Fi credentials in ``secrets.py`` (WIFI_SSID, WIFI_PASS,
     MQTT_HOST, optional MQTT_USER/MQTT_PASS). 1..N rbAmp slaves at
-    different I2C addresses (use ``prepare_address_change``/``commit_address_change``
-    flow from SPEC §10 to assign distinct addresses to each module).
+    distinct I2C addresses (use the two-step ``prepare_address_change``
+    / ``commit_address_change`` flow to assign distinct addresses once).
 
 Dependencies on device:
     umqtt.simple (ships with ESP32 MicroPython firmware out of the box)
@@ -35,18 +38,17 @@ Expected output (operator: replace MQTT_HOST + WIFI_SSID/PASS first):
     [mqtt] connected
     [cyc 1] dev_main P=215.3W (ch0=215.3)
     [cyc 1] dev_kitch P= 32.1W (ch0=32.1)
-    [cyc 1] sum 247.4W  Wh_total=0.412
+    [cyc 1] SUM 247.4W  Wh_total=0.412  in_sync=2/2
     ...
 
 See also:
     - examples_cpython/07_home_energy_balance.py (paho-mqtt twin)
-    - SPEC.md §9 (general-call), §10 (address change)
+    - examples_upy/03_multi_module.py (fleet GC primer, print-only)
 """
 import time
 
 from machine import I2C, Pin
-from rbamp import RbAmp, RbAmpStaleError
-from rbamp._io_micropython import MachineI2CBackend
+from rbamp import RbAmp, RbAmpFleet, RbAmpError, RbAmpStaleError
 
 
 # --- knobs ---------------------------------------------------------------
@@ -61,6 +63,7 @@ DEVICES = [
 INTERVAL_S = 10.0
 CYCLES = 6   # set None for forever
 TOPIC_PREFIX = "home/energy"
+GC_GROUP = 0
 
 
 def _connect_wifi():
@@ -114,42 +117,69 @@ def main():
     have_wifi = _connect_wifi()
     cli = _connect_mqtt() if have_wifi else None
 
+    # ESP32-Arduino wraps ESP-IDF i2c_master; SPEC §B.5 mitigation = 50 kHz.
     bus = I2C(0, scl=Pin(22), sda=Pin(21), freq=50_000)
-    backend = MachineI2CBackend(bus, retry_attempts=3, retry_gap_ms=5)
-    devices = []
+
+    fleet = RbAmpFleet(bus)
+    labels = {}
     for label, addr in DEVICES:
         try:
-            dev = RbAmp(backend, addr)
+            dev = RbAmp(bus, addr)
             dev.begin()
-            devices.append((label, dev))
-            print("[init]", label, "@ 0x{:02X} ch={}".format(addr, dev.channels))
-        except Exception as exc:
+        except RbAmpError as exc:
             print("[init] FAIL", label, addr, exc)
+            continue
+        labels[addr] = label
+        fleet.add(dev)
+        print("[init]", label, "@ 0x{:02X} ch={}".format(addr, dev.channels))
+
+    if len(fleet) == 0:
+        print("[init] no modules; exiting")
+        return
+
+    enabled = fleet.enable_gc_all(group=GC_GROUP)
+    print("[init] GC enabled on {}/{} module(s), group={}".format(
+        enabled, len(fleet), GC_GROUP))
 
     cyc = 0
     while CYCLES is None or cyc < CYCLES:
         cyc += 1
         time.sleep(INTERVAL_S)
+
+        tick = fleet.gc_latch(group=GC_GROUP)
+        sync = fleet.check_sync(expected_tick=tick)
+
         sum_p = 0.0
         sum_wh = 0.0
-        for label, dev in devices:
+        in_sync = 0
+        for dev, s in zip(fleet, sync):
+            label = labels[dev.address]
+            if not s.in_sync:
+                print("[cyc {:3d}] {} MISSED tick".format(cyc, label))
+                continue
+            in_sync += 1
             try:
-                snap = dev.read_period_snapshot()
-                p = sum(snap.avg_p[ch] for ch in range(dev.channels))
-                wh = sum(dev.energy.wh(ch) for ch in range(dev.channels))
-                sum_p += p
-                sum_wh += wh
-                print("[cyc {:3d}] {} P={:7.2f}W (ch0={:.2f})".format(
-                    cyc, label, p, snap.avg_p[0]))
-                _publish(cli, "{}/{}/p_w".format(TOPIC_PREFIX, label), p)
-                _publish(cli, "{}/{}/wh_total".format(TOPIC_PREFIX, label), wh)
+                snap = dev.read_period_snapshot(settle_ms=0, skip_latch=True)
             except RbAmpStaleError:
                 print("[cyc {:3d}] {} STALE — skip".format(cyc, label))
-            except Exception as exc:
+                continue
+            except RbAmpError as exc:
                 print("[cyc {:3d}] {} ERR: {}".format(cyc, label, exc))
+                continue
+            p  = sum(snap.avg_p[ch] for ch in range(dev.channels))
+            wh = sum(dev.energy.wh(ch) for ch in range(dev.channels))
+            sum_p  += p
+            sum_wh += wh
+            print("[cyc {:3d}] {} P={:7.2f}W (ch0={:.2f})".format(
+                cyc, label, p, snap.avg_p[0]))
+            _publish(cli, "{}/{}/p_w".format(TOPIC_PREFIX, label), p)
+            _publish(cli, "{}/{}/wh_total".format(TOPIC_PREFIX, label), wh)
+
         _publish(cli, "{}/sum/p_w".format(TOPIC_PREFIX), sum_p)
         _publish(cli, "{}/sum/wh_total".format(TOPIC_PREFIX), sum_wh)
-        print("[cyc {:3d}] SUM {:7.2f}W Wh_total={:.3f}".format(cyc, sum_p, sum_wh))
+        _publish(cli, "{}/sync/in_sync".format(TOPIC_PREFIX), in_sync)
+        print("[cyc {:3d}] SUM {:7.2f}W Wh_total={:.3f}  in_sync={}/{}".format(
+            cyc, sum_p, sum_wh, in_sync, len(fleet)))
 
     if cli is not None:
         cli.disconnect()
