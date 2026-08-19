@@ -663,7 +663,7 @@ and [09 · API reference](09_api_reference.md), the "Sensor
 configuration" section.
 
 `RbAmpModeError` also arises from `dev.factory_reset()` and
-`dev.save_gains()` (factory operations require develop mode). An
+`dev.save_gains()` (factory operations require factory mode). An
 address change on v1.3 is production-OK and does not raise
 `RbAmpModeError`.
 
@@ -831,7 +831,7 @@ Python convention for hardware-I/O drivers.
 | `RbAmpNotReadyError` | (reserved; not raised in v1.1.0, exported for forward-compat) | if you catch this type — repro it in an issue |
 | `RbAmpStaleError` | period snapshot stale | the "Period snapshots are always `RbAmpStaleError`" section |
 | `RbAmpParamError` (on CPython also `ValueError`) | bad argument: `dev=None`, `ch` out of range, `code` not in the per-class accept-set (for `SCT_013` — `{1, 2, 3, 4, 6}`, code 5 reserved), a reserved `cls`. Also a precondition violation: `set_ct_model*()` without a preceding `set_sensor_class()` | check the call arguments + that `set_sensor_class()` was called |
-| `RbAmpModeError` | develop mode not set (factory_reset / save_gains; an address change on v1.3 is production-OK) | check the mode flag |
+| `RbAmpModeError` | factory mode not set (factory_reset / save_gains; an address change on v1.3 is production-OK) | check the mode flag |
 | `RbAmpVersionError` | `REG_VERSION` = 0/0xFF on `begin()` (the module does not respond or the firmware is corrupted). **Per-channel `set_ct_model_ch` on v1.0/v1.1 may NACK** (the opcode does not exist) and raise `RbAmpIOError`, not `RbAmpVersionError` — the version guard is NOT implemented client-side; check `dev.firmware_version` ≥ 0x03 before the call | check `dev.firmware_version` |
 
 All exceptions have a meaningful `__str__` message — the package

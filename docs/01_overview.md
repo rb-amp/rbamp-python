@@ -324,7 +324,7 @@ RbAmpError
 ├── RbAmpNotReadyError   — device not ready (reserved)
 ├── RbAmpStaleError      — period snapshot not ready (valid flag = 0)
 ├── RbAmpParamError      — invalid argument (channel out of range, code not in per-class accept-set)
-├── RbAmpModeError       — operation requires develop mode
+├── RbAmpModeError       — operation requires factory mode
 └── RbAmpVersionError    — incompatible firmware version (or REG_VERSION = 0/0xFF)
 ```
 

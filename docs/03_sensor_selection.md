@@ -346,7 +346,7 @@ Three strategies in increasing order of complexity:
    program is complete, the specific low-current accuracy figures are not
    published.
 
-## Production vs Develop mode (persistence reference)
+## Production vs Factory mode (persistence reference)
 
 The rbAmp module operates in two modes, differing in **what exactly is saved to flash**.
 

@@ -165,7 +165,7 @@ handle, but the fleet calls degenerate to trivial ones).
 The default factory address is `0x50`. Each new or replacement module
 goes through **provisioning** (once): re-addressing from `0x50` to a
 working address + optional saving of the configuration (CT models,
-group_id, label) to flash. Develop-mode is **not required** — the
+group_id, label) to flash. Factory-mode is **not required** — the
 address change works directly in production through a two-phase commit.
 
 **Method 1 — low-level `prepare_address_change` / `commit_address_change`** (current API):

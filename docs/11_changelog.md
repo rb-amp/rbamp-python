@@ -62,7 +62,7 @@ tests** PASS. **Schema CRC**: `0x5FB3E9F3` (registers_v2).
   are **order-independent** on v1.3 firmware (on legacy v1.x the
   defensive descending pattern is retained in the `set_ct_model_ch`
   cycle).
-- **Address change** is a production-OK two-phase magic commit; develop
+- **Address change** is a production-OK two-phase magic commit; factory
   mode is **not required**. `prepare_address_change()` arms the candidate +
   the `0xA5` magic window of 5 seconds; `commit_address_change()` issues
   `CMD_COMMIT_ADDR` + reset. The library guarantees the arm-state is cleared

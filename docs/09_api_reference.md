@@ -112,7 +112,7 @@ OSError
     ├── RbAmpNotReadyError      — device not ready (reserved)
     ├── RbAmpStaleError         — period snapshot stale (valid flag = 0)
     ├── RbAmpParamError         — invalid argument (channel out of range, code not in per-class accept-set)
-    ├── RbAmpModeError          — operation requires develop mode (factory_reset / save_gains)
+    ├── RbAmpModeError          — operation requires factory mode (factory_reset / save_gains)
     └── RbAmpVersionError       — incompatible firmware version
 ```
 
@@ -615,7 +615,7 @@ Step 2 of 2. Must be called within 5 seconds of `prepare_address_change()`.
 
 Scenario: check magic-armed freshness → `CMD_COMMIT_ADDR (opcode 0x30)` → persist to flash → `CMD_RESET` → ~300 ms boot-to-responsive → update the internal address field. After the reboot, `REG_I2C_ADDRESS (0x30)` (v1.3 Fix 4) reads the new active address — this is the canonical verification.
 
-> ⚠ **Historical**: before the v1.3 fixes, address change was incorrectly documented as develop-only. Per the v1.3 A2 canon, it is a production operation through two-phase commit.
+> ⚠ **Historical**: before the v1.3 fixes, address change was incorrectly documented as factory-only. Per the v1.3 A2 canon, it is a production operation through two-phase commit.
 
 An additional nuance:
 
@@ -1195,7 +1195,7 @@ for i, byte in enumerate(label):
     bus.write_byte_data(0x50, 0x68 + i, byte)
 ```
 
-Affects the writable multi-byte: `LABEL` (0x68-0x6F), `U_GAIN`/`I_GAIN` (f32, develop-gated), `NF` (u16), `THRESH` (u16). Reads — burst OK.
+Affects the writable multi-byte: `LABEL` (0x68-0x6F), `U_GAIN`/`I_GAIN` (f32, factory-gated), `NF` (u16), `THRESH` (u16). Reads — burst OK.
 
 **Exception**: the GC broadcast frame (5 bytes to addr `0x00`) is a **separate wire-protocol path** (general-call reception), sent as a single I²C transaction.
 
