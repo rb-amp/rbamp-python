@@ -1,13 +1,16 @@
 {
   "v": 2,
-  "version": "1.3.1",
+  "version": "1.5.0",
   "deps": [],
   "urls": [
     ["rbamp/__init__.py",          "github:rb-amp/rbamp-python/rbamp/__init__.py"],
     ["rbamp/_rbamp_core.py",       "github:rb-amp/rbamp-python/rbamp/_rbamp_core.py"],
     ["rbamp/_registers.py",        "github:rb-amp/rbamp-python/rbamp/_registers.py"],
+    ["rbamp/_registers_v2.py",     "github:rb-amp/rbamp-python/rbamp/_registers_v2.py"],
+    ["rbamp/_sensor_models.py",    "github:rb-amp/rbamp-python/rbamp/_sensor_models.py"],
     ["rbamp/_snapshot.py",         "github:rb-amp/rbamp-python/rbamp/_snapshot.py"],
     ["rbamp/_energy.py",           "github:rb-amp/rbamp-python/rbamp/_energy.py"],
+    ["rbamp/_fleet.py",            "github:rb-amp/rbamp-python/rbamp/_fleet.py"],
     ["rbamp/_io_micropython.py",   "github:rb-amp/rbamp-python/rbamp/_io_micropython.py"]
   ]
 }

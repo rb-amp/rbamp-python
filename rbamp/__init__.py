@@ -43,8 +43,11 @@ from ._snapshot import (
     TOPOLOGY_SINGLE,
     TOPOLOGY_SPLIT_PHASE,
     TOPOLOGY_THREE_PHASE,
+    TOPOLOGY_FIVE_CH,
+    TOPOLOGY_SEVEN_CH,
     topology_name,
     RbAmpSensorClass,
+    RbAmpWindowField,
     # Exception hierarchy
     RbAmpError,
     RbAmpIOError,
@@ -69,7 +72,7 @@ from ._registers_v2 import (
 )
 
 #: Package version (PEP 440). Library SemVer is independent of protocol SemVer.
-__version__ = "1.3.1"
+__version__ = "1.5.0"
 
 #: Re-exported for convenience — protocol version this library was built for.
 __protocol_version__ = RBAMP_PROTOCOL_VERSION
@@ -86,8 +89,11 @@ __all__ = (
     "TOPOLOGY_SINGLE",
     "TOPOLOGY_SPLIT_PHASE",
     "TOPOLOGY_THREE_PHASE",
+    "TOPOLOGY_FIVE_CH",
+    "TOPOLOGY_SEVEN_CH",
     "topology_name",
     "RbAmpSensorClass",
+    "RbAmpWindowField",
     "RbAmpError",
     "RbAmpIOError",
     "RbAmpTimeoutError",

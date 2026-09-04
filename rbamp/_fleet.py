@@ -335,6 +335,61 @@ class RbAmpFleet:
             for ch in range(m.channels)
         )
 
+    def aligned_snapshot(self, group=0):
+        """Fleet-wide coherent latch across all channels of every member.
+
+        v1.4 senior-SKU helper (root A1/A2). Sequence:
+
+        1. Broadcast a 5-byte GC LATCH frame (:meth:`gc_latch`) — every
+           GC-enabled member freezes its PERIOD accumulators atomically
+           across all of its channels.
+        2. For each member: read the ``period-valid`` status bit; then
+           sweep the latched avg P for every channel of that member
+           using :meth:`RbAmp.read_period_avg_p` (flat regs for ch 0..2,
+           channel-access-window field 13 for ch 3..N-1).
+
+        Important limitation (root A2): the LATCH freezes ONLY the period
+        accumulators (avg_p_W etc.) — it does NOT snapshot the LIVE
+        fields 0-3 (I_RMS / I_PEAK / P_REAL / PF). Instantaneous values
+        cannot be aligned across channels — that is a hardware limitation
+        of the RT pipeline and callers should treat this method's
+        ``avg_p_list`` as coherent period-averages, not instant samples.
+
+        Args:
+            group (int): GC group filter (0 = all-call).
+
+        Returns:
+            list[dict]: One entry per tracked member, in fleet iteration
+            order. Keys: ``addr``, ``in_sync``, ``period_valid``,
+            ``avg_p`` (list[float], length = member.channels). On a
+            missed tick or NACK, ``avg_p`` is ``None`` and
+            ``period_valid`` is ``False``.
+        """
+        tick = self.gc_latch(group=group)
+        sync = self.check_sync(expected_tick=tick)
+        out = []
+        for m, s in zip(self._members, sync):
+            row = {
+                "addr": m.address,
+                "in_sync": s.in_sync,
+                "period_valid": False,
+                "avg_p": None,
+            }
+            if not s.in_sync:
+                out.append(row)
+                continue
+            try:
+                if not m.is_period_valid():
+                    out.append(row)
+                    continue
+                avg = [m.read_period_avg_p(ch) for ch in range(m.channels)]
+                row["period_valid"] = True
+                row["avg_p"] = avg
+            except RbAmpError:
+                pass
+            out.append(row)
+        return out
+
     def poll_errors(self):
         """Read durable error flag (``EVENT_ERROR`` bit3) on every member.
 

@@ -14,11 +14,18 @@ See ``libs/spec/SPEC.md`` for the protocol definitions these classes mirror.
 TOPOLOGY_SINGLE      = 1  # UI1 / I1 — 1 current channel
 TOPOLOGY_SPLIT_PHASE = 2  # UI2 / I2 — 2 current channels
 TOPOLOGY_THREE_PHASE = 3  # UI3 / I3 — 3 current channels
+TOPOLOGY_FIVE_CH     = 5  # UI5 — 5 current channels + voltage (F040 senior SKU)
+TOPOLOGY_SEVEN_CH    = 7  # UI7 — 7 current channels + voltage (F040 senior SKU)
+
+# Legacy value 4 (=I3 without voltage) still valid in _SKU_MAP; it uses
+# TOPOLOGY_THREE_PHASE semantically. Constants above are the exposed set.
 
 _TOPOLOGY_NAMES = {
     TOPOLOGY_SINGLE:      "SINGLE",
     TOPOLOGY_SPLIT_PHASE: "SPLIT_PHASE",
     TOPOLOGY_THREE_PHASE: "THREE_PHASE",
+    TOPOLOGY_FIVE_CH:     "FIVE_CH",
+    TOPOLOGY_SEVEN_CH:    "SEVEN_CH",
 }
 
 
@@ -80,6 +87,59 @@ except ImportError:
 
 
 # ---------------------------------------------------------------------------
+# RbAmpWindowField — v1.4 senior-SKU channel-access-window field codes
+# ---------------------------------------------------------------------------
+#
+# Senior SKUs (UI5/UI7, F040) expose channels 3..N-1 only through a
+# selector/window pair: write ``(field << 4) | ch`` to REG_CHANNEL_SELECT
+# (0x32); read four single-byte registers 0x3C..0x3F as float32 LE.
+#
+# **Re-select rule #1** (contract): the window buffer snapshots the
+# selected value at the moment of the select write. Reading 0x3C..0x3F
+# without re-selecting returns the SAME snapshot again — so the library
+# re-selects before every read (build-time invariant).
+#
+# Public fields:
+#   0 = I_RMS            — live RMS current (A)
+#   1 = I_PEAK           — live peak current (A)
+#   2 = P_REAL           — live real power (W)
+#   3 = PF               — live power factor (-1..+1)
+#  13 = PERIOD_AVG_P     — latched period-average P (W); v1.4 energy path
+#                          for ch>=3 (mirrors flat 0xC2/0xC6/0xDC for ch0-2)
+#  15 = CT_MODEL         — u8 RW per-channel CT model (v1.4.9+, silicon-
+#                          validated in v1.4.18). Sole per-channel path for
+#                          ch3+; ch0-2 use flat 0x51-0x53 mirrors.
+#
+# Fields 4..12 are reserved (device-private cal writes); library uses them
+# internally, they never appear in public docs or examples.
+
+try:
+    from enum import IntEnum
+
+    class RbAmpWindowField(IntEnum):
+        """v1.4 channel-access-window field codes (public subset).
+
+        Values matches the CHFIELD_* constants in the generated
+        :mod:`rbamp._registers_v2` module.
+        """
+        I_RMS         = 0
+        I_PEAK        = 1
+        P_REAL        = 2
+        PF            = 3
+        PERIOD_AVG_P  = 13
+        CT_MODEL      = 15
+except ImportError:
+    class RbAmpWindowField:  # type: ignore[no-redef]
+        """v1.4 channel-access-window field codes — MicroPython fallback."""
+        I_RMS         = 0
+        I_PEAK        = 1
+        P_REAL        = 2
+        PF            = 3
+        PERIOD_AVG_P  = 13
+        CT_MODEL      = 15
+
+
+# ---------------------------------------------------------------------------
 # Snapshot POD classes — plain attributes, no decorators
 # ---------------------------------------------------------------------------
 
@@ -91,26 +151,31 @@ class RbAmpSnapshot:
     Attributes:
         voltage (float):        RMS voltage in V (wire reg 0x86, SPEC §12).
         voltage_peak (float):   Peak voltage in V (wire reg 0x8A).
-        current (list[float]):  RMS current per channel in A (3-element list).
+        current (list[float]):  RMS current per channel in A.
         current_peak (list[float]): Peak current per channel in A.
         power (list[float]):    Real power per channel in W (signed).
         power_factor (list[float]): Power factor per channel (-1..+1).
         frequency (float):      Mains frequency in Hz.
         topology (int):         TOPOLOGY_* constant.
-        channels (int):         Number of valid channels (1..3).
+        channels (int):         Number of valid channels (1..7; senior SKUs 5/7).
         has_voltage_hw (bool):  True if voltage hardware was detected.
+
+    Length note (v1.4): per-channel lists are sized ``max(3, channels)`` so
+    legacy code accessing ``snap.current[2]`` on a UI1 keeps working
+    (returns 0.0) while UI5/UI7 modules populate the full N slots.
     """
 
-    def __init__(self):
+    def __init__(self, channels=1):
+        n = channels if channels > 3 else 3
         self.voltage = 0.0
         self.voltage_peak = 0.0
-        self.current = [0.0, 0.0, 0.0]
-        self.current_peak = [0.0, 0.0, 0.0]
-        self.power = [0.0, 0.0, 0.0]
-        self.power_factor = [0.0, 0.0, 0.0]
+        self.current      = [0.0] * n
+        self.current_peak = [0.0] * n
+        self.power        = [0.0] * n
+        self.power_factor = [0.0] * n
         self.frequency = 0.0
         self.topology = TOPOLOGY_SINGLE
-        self.channels = 1
+        self.channels = channels
         self.has_voltage_hw = False
 
     def __repr__(self):

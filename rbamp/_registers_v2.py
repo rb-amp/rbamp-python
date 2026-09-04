@@ -9,16 +9,16 @@ intentionally absent — factory tooling reads the YAML directly.
 """
 
 
-RBAMP_REG_SCHEMA_CRC32_V2 = 0x5FB3E9F3
+RBAMP_REG_SCHEMA_CRC32_V2 = 0x45274BE8
 RBAMP_PROTOCOL_VERSION_V2 = (1, 3)  # 1.3
 
 # ---- Register addresses + sizes ----
 REG_STATUS                   = 0x00  # bit0=READY, bit1=ERROR, bit2=EVENTS_PENDING (v1.3: mirror of EVENT_FLAGS!=0)
 REG_COMMAND                  = 0x01  # Write CMD_* opcode (commands.yaml)
-REG_ERROR                    = 0x02  # 0x00=OK; 0xFA..0xFF error classes; ERR_CLONE added v1.3. Clear via CMD_CLEAR_ERROR (v1.3)
+REG_ERROR                    = 0x02  # 0x00=OK; 0xFA..0xFF error classes; ERR_CLONE declared v1.3 but never raised (not implemented). Clear via CMD_C
 REG_VERSION                  = 0x03  # 0x01=v1.0 .. 0x04=v1.3
 REG_MODE                     = 0x04  # Device mode byte (read-only, factory use)
-REG_CT_MODEL                 = 0x05  # SCT-013 SKU 0=unset/1=-005/2=-010/3=-030/4=-050/5=-100/6=-020/7=-060 (v1.3). Direct write applies preset to ch
+REG_CT_MODEL                 = 0x05  # CT model code; meaning is PER-CLASS (see SENSOR_CLASS 0x25). ACCEPTED (class,model) sets — codes without a CT_
 REG_V03_PHASE_SAMPLES        = 0x06  # U-vs-I sample advance, 0..30. Factory-gated write (v1.3). Save via CMD_SAVE_GAINS.
 REG_V03_PERIOD_VALID         = 0x07  # Set by CMD_LATCH_PERIOD: 1=fresh snapshot, 0=empty accumulator (race). NOT cleared-on-read. Failed latch does 
 REG_LUT_VALID_MASK           = 0x08  # bit n = slot n has valid LUT
@@ -38,14 +38,15 @@ REG_ADC_MEAN_I1_SIZE         = 2
 REG_ADC_MEAN_I2              = 0x16  # Raw ADC mean of I2 (UI3/I3)
 REG_ADC_MEAN_I2_SIZE         = 2
 REG_CAPTURE_STATUS           = 0x18  # v1.3 raw-capture diag (major-carry glitch): bit0=ready. Arm via CMD_CAPTURE_RAW
-REG_CAPTURE_PAGE             = 0x19  # Page 0..7 — latches 32 raw I0 samples into CAPTURE_WINDOW
-REG_CAPTURE_WINDOW           = 0x1A  # 32×u16 LE raw pre-LUT I0 codes of selected page. Burst-read 64 bytes. 8 pages × 32 = 256 samples ~1.3 mains pe
-REG_CAPTURE_WINDOW_SIZE      = 64
+REG_CAPTURE_PAGE             = 0x19  # Page 0..15 — latches 16 raw I0 samples into CAPTURE_WINDOW
+REG_CAPTURE_WINDOW           = 0x1A  # 16×u16 LE raw pre-LUT I0 codes of selected page. Burst-read 32 bytes (sized to the 32-byte-max I2C bridge read
+REG_CAPTURE_WINDOW_SIZE      = 32
+REG_LUT_BYPASS               = 0x1D  # 1=bypass ADC-INL LUT (identity), 0=active. Diagnostic — LUT-on/off slope test
 REG_AC_FREQ                  = 0x20  # 50 or 60
 REG_AC_PERIOD                = 0x21  # Mains half-period
 REG_AC_PERIOD_SIZE           = 2
 REG_CALIBRATION              = 0x23  # Legacy calibration status byte
-REG_TOPOLOGY                 = 0x24  # 1=SINGLE, 2=SPLIT_PHASE, 3=THREE_PHASE (=V03_N_I)
+REG_TOPOLOGY                 = 0x24  # Number of I channels (=V03_N_I): 1, 2, 3 junior; 5=UI5, 7=UI7 senior. Canonical semantics is the COUNT (2026-0
 REG_SENSOR_CLASS             = 0x25  # 0=UNSET, 1=SCT_013, 2=WIRED_CT, 3=BUILTIN_CT. Class change resets CT_MODEL=0.
 REG_V03_PHASE_FRACT          = 0x26  # Sub-sample phase shift Q8. Factory-gated write (v1.3). Save via CMD_SAVE_GAINS.
 REG_FLEET_CONFIG             = 0x27  # bit0=GC_ENABLE (General-Call latch reception; effective after reset - ENGC not toggled live). bits1-7 reserved
@@ -59,6 +60,11 @@ REG_THRESH_P_HI              = 0x2E  # Power threshold → EVENT_FLAGS.THRESH_P.
 REG_THRESH_P_HI_SIZE         = 2
 REG_I2C_ADDRESS              = 0x30  # v1.3 two-phase: write candidate (0x08..0x77) -> RAM only (reads return staged value); arm ADDR_COMMIT_MAGIC th
 REG_ADDR_COMMIT_MAGIC        = 0x31  # Write 0xA5 to arm CMD_COMMIT_ADDR; consumed (cleared) on commit attempt. Write-only - reads return 0x00
+REG_LOCK_ARM_MAGIC           = 0x33  # v1.4.3 factory-only: write 0x5A to arm CMD_PRODUCTION_LOCK; consumed on attempt. Write-only - reads return 0x0
+REG_RDP_LEVEL                = 0x34  # v1.4.3: readback-protection level sampled from the option bytes at boot. 0=open, 1=RDP L1 (locked), 2=L2. Fact
+REG_CHANNEL_SELECT           = 0x32  # (field << 4) | channel. Writing snapshots the selected value into CHANNEL_DATA - RE-SELECT BEFORE EVERY READ (
+REG_CHANNEL_DATA             = 0x3C  # Four independent 1-byte registers 0x3C-0x3F (single-byte masters work). Read: float32 LE (u16 LE zero-padded f
+REG_CHANNEL_DATA_SIZE        = 4
 REG_UPTIME_S                 = 0x46  # Seconds since boot
 REG_UPTIME_S_SIZE            = 4
 REG_RESET_CAUSE              = 0x4A  # Last reset reason flags from RCC_CSR: bit0=PIN, bit1=POR/BOR, bit2=SW, bit3=IWDG, bit4=WWDG, bit5=LPWR
@@ -71,7 +77,7 @@ REG_CT_MODEL_CH0             = 0x51  # v1.3 D-1.3: CT model actually APPLIED to 
 REG_CT_MODEL_CH1             = 0x52  # Model applied to channel 1
 REG_CT_MODEL_CH2             = 0x53  # Model applied to channel 2
 REG_PRODUCT_ID               = 0x54  # Product family: 0x01=rbAmp sensor, 0x02=rbDimmer (own map!). Master MUST read before interpreting family-speci
-REG_HW_VARIANT               = 0x55  # BUILD_VARIANT: 1=UI1, 2=UI2, 3=UI3, 4=I1, 5=I2, 6=I3
+REG_HW_VARIANT               = 0x55  # BUILD_VARIANT: 1=UI1, 2=UI2, 3=UI3, 4=I1, 5=I2, 6=I3, 7=UI5, 8=UI7. Senior parts report the BUILD_VARIANT code
 REG_FW_TIER                  = 0x56  # bits0-1: 0=BASIC,1=STANDARD,2=PRO; bit2=bidirectional; bit3=LUT-calibrated
 REG_CAPABILITY               = 0x57  # Feature bitmap (see capability_bits). Libraries branch on bits, never on VERSION heuristics
 REG_CAPABILITY_SIZE          = 2
@@ -175,6 +181,7 @@ CMD_UID_PRESENT              = 0x35
 CMD_UID_MUTE_RESET           = 0x36
 CMD_ENTER_BOOTLOADER         = 0x37
 CMD_CAPTURE_RAW              = 0x38
+CMD_PRODUCTION_LOCK          = 0x39
 CMD_FACTORY_RESET            = 0xAA
 
 SETTLE_MS_NOP                = 0
@@ -201,6 +208,7 @@ SETTLE_MS_UID_PRESENT        = 10
 SETTLE_MS_UID_MUTE_RESET     = 10
 SETTLE_MS_ENTER_BOOTLOADER   = 100
 SETTLE_MS_CAPTURE_RAW        = 80
+SETTLE_MS_PRODUCTION_LOCK    = 0
 SETTLE_MS_FACTORY_RESET      = 1500
 
 # ---- Device / library error codes ----
@@ -251,6 +259,14 @@ EVENT_ERROR                  = 1 << 3
 EVENT_CONFIG_CHANGED         = 1 << 4
 EVENT_RESET_OCCURRED         = 1 << 5
 
+# ---- CHANNEL_SELECT (0x32) window fields (high nibble; 4-12 reserved) ----
+CHFIELD_I_RMS              = 0
+CHFIELD_I_PEAK             = 1
+CHFIELD_P_REAL             = 2
+CHFIELD_PF                 = 3
+CHFIELD_PERIOD_AVG_P       = 13
+CHFIELD_CT_MODEL           = 15
+
 # ---- Full register table (runtime introspection) ----
 REGISTERS = (
     dict(name='STATUS', addr=0x00, size=1, type='u8', endian=None, access='r', group='control', persistence='ram'),
@@ -273,7 +289,8 @@ REGISTERS = (
     dict(name='ADC_MEAN_I2', addr=0x16, size=2, type='u16', endian='le', access='r', group='diag', persistence='ram'),
     dict(name='CAPTURE_STATUS', addr=0x18, size=1, type='u8', endian=None, access='r', group='diag', persistence='ram'),
     dict(name='CAPTURE_PAGE', addr=0x19, size=1, type='u8', endian=None, access='rw', group='diag', persistence='ram'),
-    dict(name='CAPTURE_WINDOW', addr=0x1A, size=64, type='bytes', endian=None, access='r', group='diag', persistence='ram'),
+    dict(name='CAPTURE_WINDOW', addr=0x1A, size=32, type='bytes', endian=None, access='r', group='diag', persistence='ram'),
+    dict(name='LUT_BYPASS', addr=0x1D, size=1, type='u8', endian=None, access='rw', group='diag', persistence='ram'),
     dict(name='AC_FREQ', addr=0x20, size=1, type='u8', endian=None, access='r', group='system', persistence='ram'),
     dict(name='AC_PERIOD', addr=0x21, size=2, type='u16', endian='le', access='r', group='system', persistence='ram'),
     dict(name='CALIBRATION', addr=0x23, size=1, type='u8', endian=None, access='r', group='system', persistence='ram'),
@@ -289,6 +306,10 @@ REGISTERS = (
     dict(name='THRESH_P_HI', addr=0x2E, size=2, type='u16', endian='le', access='rw', group='fleet', persistence='ram'),
     dict(name='I2C_ADDRESS', addr=0x30, size=1, type='u8', endian=None, access='rw', group='system', persistence='user_config'),
     dict(name='ADDR_COMMIT_MAGIC', addr=0x31, size=1, type='u8', endian=None, access='w', group='system', persistence='ram'),
+    dict(name='LOCK_ARM_MAGIC', addr=0x33, size=1, type='u8', endian=None, access='w', group='system', persistence='ram'),
+    dict(name='RDP_LEVEL', addr=0x34, size=1, type='u8', endian=None, access='r', group='diag', persistence='ram'),
+    dict(name='CHANNEL_SELECT', addr=0x32, size=1, type='u8', endian=None, access='rw', group='channel_window', persistence='ram'),
+    dict(name='CHANNEL_DATA', addr=0x3C, size=4, type='bytes', endian=None, access='rw', group='channel_window', persistence='ram'),
     dict(name='UPTIME_S', addr=0x46, size=4, type='u32', endian='le', access='r', group='health', persistence='ram'),
     dict(name='RESET_CAUSE', addr=0x4A, size=1, type='u8', endian=None, access='r', group='health', persistence='ram'),
     dict(name='I2C_ERR_COUNT', addr=0x4B, size=2, type='u16', endian='le', access='r', group='health', persistence='ram'),
@@ -366,6 +387,7 @@ COMMANDS = (
     dict(name='UID_MUTE_RESET', opcode=0x36, settle_ms=10),
     dict(name='ENTER_BOOTLOADER', opcode=0x37, settle_ms=100),
     dict(name='CAPTURE_RAW', opcode=0x38, settle_ms=80),
+    dict(name='PRODUCTION_LOCK', opcode=0x39, settle_ms=0),
     dict(name='FACTORY_RESET', opcode=0xAA, settle_ms=1500),
 )
 
