@@ -45,7 +45,7 @@ def _make_dev_v13_sct013(mock_backend):
     return dev
 
 
-@pytest.mark.parametrize("code", [1, 2, 3, 4, 6])
+@pytest.mark.parametrize("code", [1, 2, 3, 4, 5, 6, 7])
 def test_sct013_accepts_official_codes(mock_backend, code):
     dev = _make_dev_v13_sct013(mock_backend)
     dev.set_ct_model_ch(0, code)  # must not raise
@@ -53,9 +53,9 @@ def test_sct013_accepts_official_codes(mock_backend, code):
     assert ct_writes[-1][2] == code
 
 
-@pytest.mark.parametrize("code", [5, 7])
-def test_sct013_rejects_reserved_codes(mock_backend, code):
-    """SCT_013 codes 5 (-100) + 7 (-060) reserved-uncharacterised on v1.3."""
+@pytest.mark.parametrize("code", [0, 8])
+def test_sct013_rejects_unknown_codes(mock_backend, code):
+    """SCT_013 has codes 1..7 (all accepted by the module); 0 and 8 are not."""
     dev = _make_dev_v13_sct013(mock_backend)
     with pytest.raises(RbAmpParamError):
         dev.set_ct_model_ch(0, code)

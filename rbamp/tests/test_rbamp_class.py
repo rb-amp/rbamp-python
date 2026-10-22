@@ -196,12 +196,9 @@ def test_set_ct_model_rejects_out_of_range(mock_backend):
         # 0 = unset (not in accepted set)
         with pytest.raises(RbAmpParamError):
             dev.set_ct_model(0)
-        # 5 = reserved-uncharacterised on v1.3 SCT_013
+        # 8 = no such SCT_013 code (1..7 exist)
         with pytest.raises(RbAmpParamError):
-            dev.set_ct_model(5)
-        # 7 = reserved-uncharacterised on v1.3 SCT_013
-        with pytest.raises(RbAmpParamError):
-            dev.set_ct_model(7)
+            dev.set_ct_model(8)
 
 
 # ---------------------------------------------------------------------------
@@ -272,12 +269,9 @@ def test_set_ct_model_ch_rejects_invalid_code(mock_backend):
         # 0 = unset (not in accepted set)
         with pytest.raises(RbAmpParamError):
             dev.set_ct_model_ch(0, 0)
-        # 5 = reserved-uncharacterised on v1.3 SCT_013
+        # 8 = no such SCT_013 code (1..7 exist)
         with pytest.raises(RbAmpParamError):
-            dev.set_ct_model_ch(0, 5)
-        # 7 = reserved-uncharacterised on v1.3 SCT_013
-        with pytest.raises(RbAmpParamError):
-            dev.set_ct_model_ch(0, 7)
+            dev.set_ct_model_ch(0, 8)
 
 
 def test_set_ct_model_guards_on_unset_class_v12(mock_backend):

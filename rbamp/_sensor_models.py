@@ -10,7 +10,7 @@ Regenerate:
 """
 
 
-SENSOR_MODELS_CRC32 = 0xBC25EF19
+SENSOR_MODELS_CRC32 = 0xDC7E3CEE
 SENSOR_MODELS_VERSION = 1
 
 # ---- Sensor classes (REG_SENSOR_CLASS 0x25) ----
@@ -47,9 +47,9 @@ SENSOR_MODELS = {
     (1, 2): ("SCT013_010", "SCT-013-010, 10 A", "characterized"),
     (1, 3): ("SCT013_030", "SCT-013-030, 30 A", "characterized"),
     (1, 4): ("SCT013_050", "SCT-013-050, 50 A", "characterized"),
-    (1, 5): ("SCT013_100", "SCT-013-100, 100 A", "reserved"),
+    (1, 5): ("SCT013_100", "SCT-013-100, 100 A", "characterized"),
     (1, 6): ("SCT013_020", "SCT-013-020, 20 A", "characterized"),
-    (1, 7): ("SCT013_060", "SCT-013-060, 60 A", "reserved"),
+    (1, 7): ("SCT013_060", "SCT-013-060, 60 A", "characterized"),
     (2, 1): ("TOROID_1000", "Toroid 1:1000, 196 R burden", "legacy"),
     (2, 2): ("TOROID_2000", "Toroid 1:2000, 370 R burden", "legacy"),
     (2, 3): ("TOROID_3000", "Toroid 1:3000, 572 R burden", "legacy"),
@@ -70,13 +70,13 @@ SENSOR_MODELS = {
 # for a sine, instantaneous clip ceiling (a distorted load clips at
 # peak_a / crest factor). Models without known limits are absent.
 SENSOR_LIMITS = {
-    (1, 1): (5.0, 4.79, 6.77),
-    (1, 2): (10.0, 9.58, 13.54),
-    (1, 3): (30.0, 28.74, 40.62),
-    (1, 4): (50.0, 47.9, 67.7),
-    (1, 5): (100.0, 95.8, 135.4),
-    (1, 6): (20.0, 19.16, 27.08),
-    (1, 7): (60.0, 57.48, 81.24),
+    (1, 1): (5.0, 5.8, 8.2),
+    (1, 2): (10.0, 11.6, 16.4),
+    (1, 3): (30.0, 34.8, 49.2),
+    (1, 4): (50.0, 58.0, 82.0),
+    (1, 5): (100.0, 116.0, 164.0),
+    (1, 6): (20.0, 23.2, 32.8),
+    (1, 7): (60.0, 69.6, 98.4),
     (2, 6): (1.0, 1.27, 1.8),
     (2, 7): (4.6, 5.75, 8.18),
     (2, 8): (10.18, 12.73, 18.0),
