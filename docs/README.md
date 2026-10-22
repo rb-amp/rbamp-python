@@ -5,7 +5,7 @@ Documentation for the **rbAmp** python client for the rbAmp I²C energy-monitori
 ## Contents
 
 - [Overview](01_overview.md)
-- [Tier Support](02_tiers.md)
+- [Module Lines](02_tiers.md)
 - [Sensor Selection](03_sensor_selection.md)
 - [Hardware Setup](04_hardware.md)
 - [Quickstart](05_quickstart.md)

@@ -828,7 +828,7 @@ class RbAmp:
         Writes ``REG_SENSOR_CLASS`` (0x25), issues ``CMD_SAVE_USER_CONFIG``,
         waits 700 ms for the flash erase + write cycle. Blocking.
         (v1.5.0: switched from ``CMD_SAVE_GAINS`` — the latter is
-        develop-gated in production and silently no-ops for user persist.)
+        factory-gated in production and silently no-ops for user persist.)
 
         On v1.2+ firmware this is a precondition for :meth:`set_ct_model` and
         :meth:`set_ct_model_ch` — calling either with the class still
@@ -925,7 +925,7 @@ class RbAmp:
         Writes ``REG_CT_MODEL``, issues ``CMD_SET_CT_MODEL_CH0`` (v1.3+),
         waits 5 ms, then ``CMD_SAVE_USER_CONFIG``. Blocking.
         (v1.5.0: persist opcode switched from ``CMD_SAVE_GAINS``, which
-        is develop-gated in production and silently no-ops user persist.)
+        is factory-gated in production and silently no-ops user persist.)
 
         Equivalent to ``set_ct_model_ch(0, code)``. For multi-channel
         modules (UI2 / UI3 / I2 / I3) use :meth:`set_ct_model_ch` instead.
@@ -965,7 +965,7 @@ class RbAmp:
           that as :class:`RbAmpParamError` and does NOT persist.
 
         (v1.5.0: persist opcode is ``CMD_SAVE_USER_CONFIG`` in both paths.
-        Prior draft used ``CMD_SAVE_GAINS`` which is develop-gated in
+        Prior draft used ``CMD_SAVE_GAINS`` which is factory-gated in
         production and silently no-ops user persist — root audit 2026-09-04.)
 
         **Multi-channel call order** (v1.4+): order-INDEPENDENT.
@@ -1293,7 +1293,7 @@ class RbAmp:
         I2C_ADDRESS). Ungated in production firmware — this is the
         opcode a released device actually honours. See root's audit note
         (2026-09-04, bus 14:50Z): ``CMD_SAVE_GAINS`` also writes CT_MODEL
-        mirrors but is develop-gated, so in production it is a silent
+        mirrors but is factory-gated, so in production it is a silent
         no-op for user persist. Sister libraries (esp-idf) hit this
         latent bug and switched.
         """

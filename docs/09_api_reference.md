@@ -26,7 +26,14 @@ from rbamp import (
     RbAmpPeriodSnapshot,       # period snapshot dataclass-style
     RbAmpSensorClass,          # sensor-class enum
     TOPOLOGY_SINGLE, TOPOLOGY_SPLIT_PHASE, TOPOLOGY_THREE_PHASE,
+    TOPOLOGY_FIVE_CH, TOPOLOGY_SEVEN_CH,
     topology_name,             # helper: int → topology name
+    # STD module line (1.6.0)
+    RbAmpStdEnergy, RbAmpStdVoltage, RbAmpStdChannel,
+    RbAmpStdConfig, RbAmpStdHealth,   # value objects
+    std_energy_delta,          # energy between two read_std_energy() snapshots
+    phase_seq_name,            # helper: phase-sequence code → name
+    PHASE_SEQ_NA, PHASE_SEQ_FORWARD, PHASE_SEQ_REVERSE, PHASE_SEQ_ABNORMAL,
     # Exception hierarchy
     RbAmpError,                # base class of all errors
     RbAmpIOError,
@@ -36,8 +43,9 @@ from rbamp import (
     RbAmpParamError,
     RbAmpModeError,
     RbAmpVersionError,
+    RbAmpNotSupportedError,    # call not available on this module / firmware
     # Metadata
-    __version__,               # "1.3.0"
+    __version__,               # "1.6.0"
     __protocol_version__,      # 0x04 (RBAMP_PROTOCOL_VERSION)
     REGISTERS, COMMANDS,       # raw protocol constants (advanced use)
 )
@@ -53,6 +61,10 @@ from rbamp import RbAmp, RbAmpSensorClass, RbAmpError
 
 The API follows standard Python patterns:
 
+- **One class for every module line**: the same `RbAmp` class serves
+  BASIC and STANDARD (STD) modules. The line is detected automatically
+  in `begin()` (see [STD module line](#std-module-line-160)); you never
+  choose it.
 - **Class-based**: the main `RbAmp` class owns everything — RT
   readings, period, configuration, diagnostics. The handle holds the
   backend + energy accumulator internally.
@@ -112,8 +124,9 @@ OSError
     ├── RbAmpNotReadyError      — device not ready (reserved)
     ├── RbAmpStaleError         — period snapshot stale (valid flag = 0)
     ├── RbAmpParamError         — invalid argument (channel out of range, code not in per-class accept-set)
-    ├── RbAmpModeError          — operation requires factory mode (factory_reset / save_gains)
-    └── RbAmpVersionError       — incompatible firmware version
+    ├── RbAmpModeError          — operation refused in the current mode (factory-only operation, sensor class unset, factory-paired module)
+    ├── RbAmpVersionError       — incompatible firmware version
+    └── RbAmpNotSupportedError  — call not available on this module (STD-only call on a BASIC module, or a feature the module image lacks)
 ```
 
 > **Note**: `RbAmpParamError` inherits from `RbAmpError` + `ValueError`
@@ -146,8 +159,8 @@ except RbAmpError as e:
 class RbAmpSensorClass(IntEnum):
     UNSET       = 0   # factory value after reset
     SCT_013     = 1   # SCT-013 series (shipping default)
-    WIRED_CT    = 2   # Reserved — STANDARD tier
-    BUILTIN_CT  = 3   # Reserved — PRO tier
+    WIRED_CT    = 2   # factory-fitted wired CT (module ships paired)
+    BUILTIN_CT  = 3   # factory-fitted built-in CT (module ships paired)
 ```
 
 > **Note**: on CPython, `IntEnum` from the stdlib `enum` is used. On
@@ -157,10 +170,12 @@ class RbAmpSensorClass(IntEnum):
 > `dev.set_sensor_class(RbAmpSensorClass.SCT_013)` or
 > `dev.set_sensor_class(1)` — both work.
 
-Only `UNSET` and `SCT_013` are meaningful for the current firmware.
-The reserved values are present in the API for compatibility with
-future SKUs — for now, passing them to `set_sensor_class()` will
-raise `RbAmpParamError`.
+`SCT_013` is the class you select on a module with user-fitted
+SCT-013 clamps. `WIRED_CT` and `BUILTIN_CT` describe modules that are
+delivered factory-paired with their sensor: `set_sensor_class()` and
+`set_ct_model*()` refuse to change such a module (`RbAmpModeError`, see
+[read-before-write guard](#read-before-write-guard)). Values outside
+0..3 raise `RbAmpParamError`.
 
 ### `RbAmpSnapshot`
 
@@ -171,13 +186,13 @@ Returned by `dev.read_all()`. A plain Python class (not a
 class RbAmpSnapshot:
     voltage:        float       # V — RMS voltage
     voltage_peak:   float       # V — peak voltage
-    current:        list        # [ch0, ch1, ch2] — RMS current per channel, A
-    current_peak:   list        # [ch0, ch1, ch2] — peak current, A
-    power:          list        # [ch0, ch1, ch2] — active power (signed), W
-    power_factor:   list        # [ch0, ch1, ch2] — dimensionless, −1..+1
+    current:        list        # [ch0, ch1, ...] — RMS current per channel, A
+    current_peak:   list        # [ch0, ch1, ...] — peak current, A
+    power:          list        # [ch0, ch1, ...] — active power (signed), W
+    power_factor:   list        # [ch0, ch1, ...] — dimensionless, −1..+1
     frequency:      float       # Hz
     topology:       int         # TOPOLOGY_* constant
-    channels:       int         # 1..3 — number of valid channels
+    channels:       int         # number of valid channels (1..3, or 5 / 7 on UI5 / UI7)
     has_voltage_hw: bool        # True if a voltage sensor is present
 ```
 
@@ -190,15 +205,15 @@ primitive.
 
 ```python
 class RbAmpPeriodSnapshot:
-    avg_p:        list   # [ch0, ch1, ch2] — average P over the period, W
+    avg_p:        list   # [ch0, ch1, ...] — average P over the period, W (all channels)
     max_p:        float  # peak instantaneous power on channel 0
     latch_ms:     int    # period duration (device's view)
     master_dt_ms: int    # master wall-clock dt since the last latch
     valid:        bool   # True if the latch-ready flag was set
 ```
 
-> For energy integration, use `master_dt_ms`, not `latch_ms` — the
-> module's internal timer has limited accuracy.
+> For energy integration, use `master_dt_ms`, not `latch_ms` — `latch_ms`
+> is a module diagnostic timer.
 
 ### Topology constants
 
@@ -206,6 +221,8 @@ class RbAmpPeriodSnapshot:
 TOPOLOGY_SINGLE      = 1   # 1 current channel (UI1 / I1)
 TOPOLOGY_SPLIT_PHASE = 2   # 2 current channels (UI2 / I2)
 TOPOLOGY_THREE_PHASE = 3   # 3 current channels (UI3 / I3)
+TOPOLOGY_FIVE_CH     = 5   # 5 current channels + voltage (UI5)
+TOPOLOGY_SEVEN_CH    = 7   # 7 current channels + voltage (UI7)
 
 topology_name(topology: int) -> str   # 1 → "SINGLE", 2 → "SPLIT_PHASE", ...
 ```
@@ -227,9 +244,17 @@ traffic is generated until `begin()`.
 
 ### `dev.begin()`
 
-Probes the device + caches topology + primes the LATCH.
+Probes the device + detects the module line + caches topology + primes
+the LATCH.
 
-Sequence:
+**Module-line detection (1.6.0).** `begin()` first checks whether the
+module is an STD module (16-bit register map). If it is, the handle
+switches to STD mode (`dev.is_std` becomes `True`, `dev.channels` and
+`dev.has_voltage_hw` come from the module) and `begin()` returns. If
+not, the BASIC sequence below runs. This needs a bus backend that can
+do 16-bit transactions; otherwise the module is treated as BASIC.
+
+BASIC sequence:
 
 1. Reads `REG_VERSION` — raises `RbAmpIOError` on NACK,
    `RbAmpVersionError` if `0x00` / `0xFF` is returned.
@@ -241,6 +266,9 @@ Sequence:
    The first snapshot after power-up is discarded.
 5. Stores `time.monotonic()` (or `time.ticks_ms()` on uPy) for
    subsequent energy integration.
+
+On a BASIC module with SCT-013 clamps, `begin()` also evaluates the
+[SCT-013 rating-switch correction](#sct-013-rating-switch-correction).
 
 Idempotent: safe to call repeatedly.
 
@@ -268,8 +296,8 @@ scenarios.
 
 ### `dev.wait_ready(timeout_ms=1000) -> None`
 
-Polls the module's ready flag until bit 0 is set. Useful after
-power-up — the module may need up to 200 ms for its first RT window.
+Polls the module's ready flag until it is set. Useful after
+power-up — the module may need up to 100 ms for its first RT window.
 
 **Raises**: `RbAmpTimeoutError` if the bit is not seen before
 `timeout_ms` elapses.
@@ -280,7 +308,8 @@ power-up — the module may need up to 200 ms for its first RT window.
 dev.firmware_version: int      # REG_VERSION — opaque byte
 dev.topology:         int      # TOPOLOGY_* constant
 dev.topology_name:    str      # "SINGLE" / "SPLIT_PHASE" / "THREE_PHASE"
-dev.channels:         int      # 1..3
+dev.channels:         int      # 1..3 (BASIC), 5 / 7 on UI5 / UI7, or the STD module's channel count
+dev.is_std:           bool     # True if begin() detected an STD module
 dev.has_voltage_hw:   bool     # True if begin() detected U_rms > 1.0
 dev.address:          int      # 7-bit I²C address (updated after commit_address_change)
 ```
@@ -296,7 +325,7 @@ The remaining properties (`topology`, `channels`, `has_voltage_hw`,
 `address`) are cached in the handle and return the values stored
 after `begin()` without hitting the bus.
 
-## Real-time readings (RT block, 200 ms update)
+## Real-time readings (RT block, 100 ms update)
 
 All methods raise `RbAmpIOError` on a communication failure (NACK
 after retry or sanity reject) or `RbAmpParamError` on an invalid
@@ -329,7 +358,7 @@ for i in dev.current:                      # iterate over all valid channels
 total = sum(p for p in dev.power)          # sum of all channels
 ```
 
-`len(dev.current)` equals `dev.channels` (1..3).
+`len(dev.current)` equals `dev.channels`.
 
 ### Methods (fully equivalent to the property form)
 
@@ -356,6 +385,162 @@ Equivalent to consecutive `read_voltage` + `read_voltage_peak` +
 
 **Raises**: `RbAmpIOError` if any sub-read fails.
 
+The common readers — `voltage`, `voltage_peak`, `current`, `current_peak`,
+`power`, `power_factor`, `frequency` and their `read_*` forms — work on
+every module line. On an STD module `phase` in `read_voltage()` /
+`read_voltage_peak()` selects the voltage input
+(`0..n_voltage-1`); on a BASIC module only `phase=0` is valid.
+
+## STD module line (1.6.0)
+
+> ⚠️ **Validation status.** The on-device energy, voltage-angle and
+> starting-current features are validated on **CPython (`smbus2`)**. The
+> same calls are implemented for MicroPython (`machine.I2C`), but the
+> MicroPython 16-bit path is **not yet hardware-validated** — prefer
+> CPython for these on-device features until a release note says
+> otherwise. The common readings (`dev.voltage`, `dev.current[ch]`,
+> `dev.power[ch]`, period snapshots) work on every supported host
+> regardless.
+
+A single `RbAmp` class serves both module lines. `begin()` detects the
+line automatically; `dev.is_std` is `True` on an STD module. The same
+I²C wiring and address are used (see [04 · Hardware](04_hardware.md)).
+
+- The **common readers** (`voltage`, `current`, `power`,
+  `power_factor`, `frequency`) work on any module.
+- The calls in this section are **STD-only**. On a BASIC module they raise
+  `RbAmpNotSupportedError`.
+- Some STD calls also need a recent enough module image (on-device energy,
+  micro-unit counters, voltage angles, starting current). If the module
+  does not provide them the call raises `RbAmpNotSupportedError`
+  ("not available").
+- The period-snapshot API (`latch_period`, `read_period_*`,
+  `stream_period`), the master-side `dev.energy` accumulator and the sensor
+  configuration calls below are for BASIC modules only — do not use them
+  on an STD module. On an STD module use `read_std_energy()` for energy.
+
+```python
+dev.is_std        -> bool   # True on an STD module (set by begin())
+dev.std           -> object # internal STD client (advanced use) or None on BASIC
+```
+
+### Readers
+
+```python
+dev.read_std_voltage(phase=0)    -> RbAmpStdVoltage   # RMS, peak, THD, angle
+dev.read_voltage_angle(phase=0)  -> (float, bool)     # (degrees, valid)
+dev.read_phase_sequence()        -> int               # 0..3
+dev.read_std_channel(ch=0)       -> RbAmpStdChannel   # I / P / Q / S / PF + harmonics
+dev.read_std_totals(k=0)         -> RbAmpStdChannel   # totals block k (0 = grand total)
+dev.read_reactive(ch=0)          -> float             # var
+dev.read_apparent(ch=0)          -> float             # VA
+dev.read_std_config()            -> RbAmpStdConfig
+dev.read_std_health()            -> RbAmpStdHealth
+```
+
+- **`read_voltage_angle(phase)`** — voltage phase angle relative to
+  phase 0, returned as `(degrees, valid)`. `valid` is `False` on a
+  single-voltage module or on a module image that does not report angles.
+- **`read_phase_sequence()`** — phase-sequence code:
+  `PHASE_SEQ_NA` (0, not available), `PHASE_SEQ_FORWARD` (1),
+  `PHASE_SEQ_REVERSE` (2), `PHASE_SEQ_ABNORMAL` (3).
+  `phase_seq_name(code)` returns the text name. Raises
+  `RbAmpNotSupportedError` on a BASIC module or on a module image that
+  does not report it.
+- **`read_reactive(ch)` / `read_apparent(ch)`** — reactive power in var
+  and apparent power in VA for one channel. STD modules only; on a BASIC
+  module they raise `RbAmpNotSupportedError` (on BASIC, reactive power is
+  not exposed by this library).
+- **`read_std_totals(k)`** — totals block `k`; `k=0` is the grand total.
+  Per-phase totals depend on the module's register map version.
+- **`read_std_config()` / `read_std_health()`** — configuration and
+  status/health blocks.
+
+### Value objects
+
+Plain classes (not `@dataclass`), all re-exported from `rbamp`.
+
+| Class | Fields |
+|---|---|
+| `RbAmpStdVoltage` | `u_rms`, `u_peak`, `thd_u`, `angle_deg`, `angle_valid` |
+| `RbAmpStdChannel` | `i_rms`, `i_peak`, `p`, `q`, `s`, `pf`, `thd_i`, `pf1`, `q1` |
+| `RbAmpStdConfig` | `sensor_class`, `ct_model`, `tier`, `i2c_addr`, `rate_ms`, `harmonics`, `start_ua`, `start_ua_supported` |
+| `RbAmpStdHealth` | `status`, `cal_ok`, `sensor_ok`, `mains_ok`, `time_valid`, `nvm_fault`, `maint`, `frame_count`, `crc_errors`, `lta_status`, `lta_src`, `cal_src`, `group_status`, `ring_drop`, `lost_frames`, `uptime_s`, `reset_cause`, `boot_count` |
+| `RbAmpStdEnergy` | see below |
+
+### `dev.read_std_energy() -> RbAmpStdEnergy`
+
+On-device life-time energy snapshot. Requires a module that provides
+on-device energy; otherwise `RbAmpNotSupportedError`.
+
+`RbAmpStdEnergy` carries:
+
+| Group | Fields |
+|---|---|
+| Active, Wh | `act_import_wh`, `act_export_wh`, `act_net_wh` |
+| Active, mWh | `act_import_mwh`, `act_export_mwh`, `act_net_mwh` |
+| Active, µWh | `act_import_uwh`, `act_export_uwh`, `act_net_uwh` |
+| Reactive | `rea_import_varh`, `rea_export_varh`; µvarh: `rea_import_uvarh`, `rea_export_uvarh` |
+| Per channel | `channels` (count of valid entries); `ch_import_mwh[]`, `ch_export_mwh[]`, `ch_import_uwh[]`, `ch_export_uwh[]` |
+| Bookkeeping | `generation`, `uptime_s`, `group_status` |
+| Provenance flags | `fine`, `fine_reactive` |
+
+The µWh / µvarh fields are always populated. When the module image does
+not provide the finer counters, they are scaled up from the coarser ones
+and `fine` (active) / `fine_reactive` are `False` — read the flag if you
+need to know where the value came from.
+
+### `RbAmp.std_energy_delta(prev, now) -> (delta, module_restarted)`
+
+Energy consumed between two `read_std_energy()` snapshots (static
+method; also exported as `std_energy_delta`). Power-cut-safe.
+
+- `module_restarted` is `True` when `now.uptime_s < prev.uptime_s`.
+- `delta` is an `RbAmpStdEnergy` holding the per-field increase, or
+  `None` when the `generation` counter changed (the two readings are
+  not comparable).
+- A counter that comes back slightly below the previous reading (resume
+  after a power cut) is clamped to 0; `net` is always import − export of
+  the clamped parts.
+- Per-channel entries are filled only when both snapshots carry the same
+  channel count.
+
+```python
+prev = dev.read_std_energy()
+time.sleep(60)
+now = dev.read_std_energy()
+delta, restarted = RbAmp.std_energy_delta(prev, now)
+if delta is not None:
+    print(delta.act_import_wh, "Wh imported in this interval")
+```
+
+### Starting current and configuration
+
+```python
+dev.get_start_current()     -> int    # µA, 0 = off
+dev.set_start_current(ua)   -> None
+dev.save_config()           -> None   # persist writable STD config to flash (blocking)
+dev.set_time(unix_epoch)    -> None   # set the module's clock
+```
+
+- **`get_start_current()`** — the energy starting current in µA
+  (`0` = off).
+- **`set_start_current(ua)`** — below this per-channel current the
+  module does not count energy into import/export; the live readings
+  (I, P, Q) are unaffected. The value applies at once; call
+  `save_config()` to keep it across a restart. An unsupported value raises
+  `RbAmpParamError` before anything is written to the bus. The value must
+  be `0` (off) or a multiple of 10 µA within the supported range.
+- **`save_config()`** — persists the writable STD configuration. Blocking.
+- **`set_time(unix_epoch)`** — sets the module's clock from a Unix
+  epoch; an epoch before 2020 raises `RbAmpParamError`. Set the time again
+  after a module restart (`read_std_health().time_valid` is `False` until the
+  clock is set).
+- `get_start_current()` / `set_start_current()` raise
+  `RbAmpNotSupportedError` on a module image that does not provide the
+  starting-current setting; `RbAmpStdConfig.start_ua_supported` shows
+  whether it does.
+
 ## Period accounting
 
 See [01 · Overview](01_overview.md) for the big picture and
@@ -378,6 +563,11 @@ fresh.
 
 Average active power on a channel over the latched period. Must be
 called after `latch_period()` + a 50 ms settle + a valid check.
+
+Resolves **every** channel of the module (`ch = 0..channels-1`), including
+channels 3+ on 5- and 7-channel modules (UI5 / UI7). The period snapshot and
+the Wh accumulator cover all channels as well. `dev.read_period_avg_p(ch)`
+is an alias with the same behaviour.
 
 ### `dev.read_period_max_power() -> float`
 
@@ -403,8 +593,8 @@ sequence under the hood:
 3. Capture `time.monotonic()` to compute `master_dt_ms`.
 4. `time.sleep(settle_ms / 1000)` — 50 ms by default.
 5. Check the latch-ready flag. If 0 — raise
-   `RbAmpStaleError` (committing the timestamp first so the next
-   snapshot does not double-count the `dt`).
+   `RbAmpStaleError` (the previous timestamp is kept, so the next
+   successful snapshot covers the full interval and Wh stays exact).
 6. Read `avg_p[0..channels-1]` + `max_p` + `latch_ms`.
 7. Update the timestamp + call `energy.tick(snap)` to integrate
    Wh (unless the accumulator is disabled via `energy.disable()`).
@@ -472,6 +662,7 @@ package owns the instance:
 dev.energy.wh(ch=0)         -> float    # current Wh total for the channel
 dev.energy.reset(ch=0)      -> None     # zero a single channel
 dev.energy.reset_all()      -> None     # zero all channels
+dev.energy.is_enabled       -> bool     # True while auto-integration is active (default)
 dev.energy.disable()        -> None     # turn off auto-integration
 dev.energy.enable()         -> None     # turn it back on
 ```
@@ -513,11 +704,22 @@ dev.set_sensor_class(1)
 
 **Raises**:
 
-- `RbAmpParamError` — `cls` not in {`UNSET`, `SCT_013`} (the
-  reserved values are unsupported on the current SKU)
+- `RbAmpParamError` — `cls` outside 0..3
+- `RbAmpModeError` — the module is factory-paired (current class
+  `WIRED_CT` / `BUILTIN_CT`) and `cls` differs; changing it would clear
+  the fitted-sensor calibration
 - `RbAmpIOError` — communication failure
 
-Must be called **before** `set_ct_model*()`.
+Must be called **before** `set_ct_model*()`. Writing the same class the
+module already holds is a no-op (no bus write), because a class write
+clears the per-channel CT models device-side. See
+[read-before-write guard](#read-before-write-guard).
+
+### `dev.read_sensor_class() -> int`
+
+Reads the pinned sensor class: `0` UNSET, `1` SCT_013, `2` WIRED_CT,
+`3` BUILTIN_CT (the `RbAmpSensorClass` values). Reads `0` on firmware
+where the register is not present.
 
 ### `dev.set_ct_model(code) -> None`
 
@@ -530,17 +732,24 @@ channel 0 only**.
 | 2 | SCT-013-010 |
 | 3 | SCT-013-030 |
 | 4 | SCT-013-050 |
+| 5 | SCT-013-100 |
 | 6 | SCT-013-020 |
+| 7 | SCT-013-060 |
 
-> Code `5` is reserved in v1.3 firmware (formerly `SCT-013-100`) and returns `DEV_ERR_PARAM`. Code `7` (60 A) is still uncharacterized. The accepted set for the `SCT_013` class is `{1, 2, 3, 4, 6}` (non-contiguous). The full per-class accept-set table is in [03 · Current sensor selection](03_sensor_selection.md#per-class-ct-validation).
+> The accepted set for the `SCT_013` class is `{1, 2, 3, 4, 5, 6, 7}`. The full per-class accept-set table is in [03 · Current sensor selection](03_sensor_selection.md#choosing-an-sct-013-model).
 
 **Raises**:
 
-- `ValueError` (and also `RbAmpParamError`) — `code` not in the per-class accept-set for the current `REG_SENSOR_CLASS` (for `SCT_013` this is `{1, 2, 3, 4, 6}`)
-- `RbAmpModeError` — if `set_sensor_class()` was not called
+- `ValueError` (and also `RbAmpParamError`) — `code` not in the per-class accept-set for the current `REG_SENSOR_CLASS` (for `SCT_013` this is `{1, 2, 3, 4, 5, 6, 7}`)
+- `RbAmpModeError` — if `set_sensor_class()` was not called, or the
+  module is factory-paired (class 2/3) and the code differs (use
+  `set_ct_model_ch_force()` in a service context)
 - `RbAmpIOError` — communication failure
 
-`RbAmpModeError` message:
+Setting the model the channel already holds is a no-op
+([read-before-write guard](#read-before-write-guard)).
+
+`RbAmpModeError` message (class unset):
 
 ```text
 REG_SENSOR_CLASS is UNSET;
@@ -557,7 +766,7 @@ Under the hood: stage `REG_CT_MODEL (0x05)` → command
 `CMD_SET_CT_MODEL_CH0/1/2` (opcode 0x28/0x29/0x2A) → 5 ms settle →
 `CMD_SAVE_USER_CONFIG (0x32)` → 700 ms. Blocking, ~705 ms.
 
-> ✅ **v1.3: channel-binding order does not matter** (Fix A pure-staging). On v1.3, writing `REG_CT_MODEL (0x05)` stages the value but **no longer applies** it automatically to ch0. Application happens **only** through `CMD_SET_CT_MODEL_CHn`. You can configure channels in any order.
+> ✅ **v1.3: channel-binding order does not matter** . On v1.3, writing `REG_CT_MODEL (0x05)` stages the value but **no longer applies** it automatically to ch0. Application happens **only** through `CMD_SET_CT_MODEL_CHn`. You can configure channels in any order.
 >
 > ```python
 > dev.set_ct_model_ch(0, 1)  # any order is OK on v1.3
@@ -567,18 +776,86 @@ Under the hood: stage `REG_CT_MODEL (0x05)` → command
 
 **Raises**:
 
-- `RbAmpParamError` — `channel` out of 0..`dev.channels-1` or `code` not in the per-class accept-set (for `SCT_013` — `{1, 2, 3, 4, 6}`; code 5 reserved)
-- `RbAmpModeError` — `set_sensor_class()` not called
+- `RbAmpParamError` — `channel` out of 0..`dev.channels-1` or `code` not in the per-class accept-set (for `SCT_013` — `{1, 2, 3, 4, 5, 6, 7}`)
+- `RbAmpModeError` — `set_sensor_class()` not called, or the module is
+  factory-paired and the code differs
+
+### `dev.set_ct_model_ch_force(channel, code) -> None`
+
+Service-path variant of `set_ct_model_ch()` that bypasses the
+read-before-write guard: it writes even when the module is factory-paired
+or already holds the code. Intended for technicians re-sensoring a unit.
+The module still validates the (class, code) pair and the call raises
+`RbAmpParamError` for a bad pair.
+
+### Read-before-write guard
+
+Writing a CT model replaces that channel's calibration with the generic
+preset for the model, so since 1.6.0 the setters check first:
+
+| Call | Module already holds the value | Factory-paired module (class 2/3) | Otherwise |
+|---|---|---|---|
+| `set_sensor_class(cls)` | no-op, no bus write | `RbAmpModeError` if `cls` differs | writes + saves |
+| `set_ct_model(code)` / `set_ct_model_ch(ch, code)` | no-op, no bus write | `RbAmpModeError` if the code differs | writes + saves |
+| `set_ct_model_ch_force(ch, code)` | writes | writes | writes |
 
 ### V2 verify mirrors — `CT_MODEL_CH0/1/2 (0x51-0x53)`
 
 Read-only registers reflecting the CT preset actually applied on each channel. The write wire-protocol **does not change** — writes use the mechanism above. 0x51-0x53 are merely a read-back for state checks and read-compare-write patterns:
 
 ```python
-applied_ch0 = dev.read_reg(0x51)   # what is actually applied
-applied_ch1 = dev.read_reg(0x52)
-applied_ch2 = dev.read_reg(0x53)
+applied_ch0 = dev.read_ct_model_ch(0)   # what is actually applied
+applied_ch1 = dev.read_ct_model_ch(1)
+applied_ch2 = dev.read_ct_model_ch(2)
 ```
+
+### SCT-013 rating-switch correction
+
+SCT-013 modules are calibrated at the factory with one reference clamp
+model. When a channel is switched to a different model, a module image that
+does not rescale by itself keeps applying the reference gain, so current and
+power would be read at the wrong scale. Since 1.6.0 the library corrects
+this **automatically** on BASIC modules with sensor class `SCT_013`:
+
+- Current, power and the energy derived from power (`read_current`,
+  `read_current_peak`, `read_power`, `read_period_avg_power`, and so the
+  period snapshot and `dev.energy`) are corrected to the chosen model,
+  relative to the gain the module actually applies.
+- Voltage and power factor are never changed.
+- On module firmware up to 1.4.19 a model change restarts the module once (about a second); from 1.4.20 the module corrects itself. The SCT rating correction scales current, power and energy, never voltage or power factor.
+- Modules whose firmware performs this itself are detected and left alone
+  (scale 1).
+- Factory-paired modules (class 2/3) are never scaled.
+- The correction is evaluated in `begin()` and again after a restart the
+  library drives (`reset()`) or a detected restart. In one situation (a
+  model written during the current power cycle) the library may issue one
+  module reset to read the stored gain.
+
+```python
+dev.set_rating_correction(enabled: bool)  -> None   # default enabled
+dev.rating_correction_enabled             -> bool
+dev.ct_rating_scale(ch=0)                 -> float  # scale currently applied (1.0 = none)
+dev.ct_rating_status(ch=0)                -> (action, detail) | None
+dev.refresh_rating_correction()           -> None
+```
+
+- **`set_rating_correction(enabled)`** — turn the correction off to read
+  the raw, uncorrected values (or on a module whose firmware already
+  corrects). Recomputes immediately.
+- **`ct_rating_scale(ch)`** — the scale applied to current/power/energy on
+  a channel; `1.0` when no correction is active.
+- **`ct_rating_status(ch)`** — `(action, detail)` of the last evaluation
+  for a channel, or `None` if the channel was never evaluated (for example
+  not an SCT channel). `action` is one of `"unity"`, `"ok"`,
+  `"needs_reset"`, `"warn_uncal"`, `"warn_gain"`; `detail` is text.
+  The `warn_*` actions mean the library could not determine a safe scale
+  and left the reading uncorrected.
+- **`refresh_rating_correction()`** — re-evaluate after a restart the
+  library did not drive (for example a model saved and the module reset
+  externally).
+
+This is a feature of the SCT-013 path in all rbAmp libraries, not specific
+to Python.
 
 ### `dev.save_gains() -> None`
 
@@ -613,9 +890,9 @@ Scenario: range validation → write the candidate into `REG_I2C_ADDRESS (0x30)`
 
 Step 2 of 2. Must be called within 5 seconds of `prepare_address_change()`.
 
-Scenario: check magic-armed freshness → `CMD_COMMIT_ADDR (opcode 0x30)` → persist to flash → `CMD_RESET` → ~300 ms boot-to-responsive → update the internal address field. After the reboot, `REG_I2C_ADDRESS (0x30)` (v1.3 Fix 4) reads the new active address — this is the canonical verification.
+Scenario: check magic-armed freshness → `CMD_COMMIT_ADDR (opcode 0x30)` → persist to flash → `CMD_RESET` → ~300 ms boot-to-responsive → update the internal address field. After the reboot, `REG_I2C_ADDRESS (0x30)` (v1.3) reads the new active address — this is the canonical verification.
 
-> ⚠ **Historical**: before the v1.3 fixes, address change was incorrectly documented as factory-only. Per the v1.3 A2 canon, it is a production operation through two-phase commit.
+> ⚠ **Historical**: before the v1.3 fixes, address change was incorrectly documented as factory-only. On v1.3 it is a production operation through two-phase commit.
 
 An additional nuance:
 
@@ -682,14 +959,14 @@ path has been removed (firmware never NACKs reads; unmapped →
 ### `dev.read_capability() -> int`
 
 Reads the 16-bit feature map from the `CAPABILITY (0x57/0x58)`
-registers, little-endian u16. Bit 8 (`0x0100`) indicates the
-presence of a voltage front-end. Use it for feature detection (not
+registers, little-endian u16. The map includes a
+voltage front-end flag. Use it for feature detection (not
 version heuristics).
 
 ### `dev.has_voltage() -> bool`
 
 A convenience helper over `read_capability()` — returns `True` if
-the module has a U channel (bit 8). Cached in the handle on the
+the module has a U channel. Cached in the handle on the
 first call.
 
 ### `dev.read_product_id() -> int`
@@ -715,7 +992,7 @@ label is set.
 
 Writes an 8-byte label. The string is truncated to 8 bytes or
 padded with zeros. The write is **byte-at-a-time** (rbAmp does
-**not auto-increment** writes — F.13 wire-canon; the package does
+**not auto-increment** writes; the package does
 the byte loop automatically). After writing, a
 `dev.save_user_config()` is needed for the label to survive a reset.
 
@@ -758,7 +1035,7 @@ module's state correctly.
 |---|---|---|
 | **Where it lives** | Validation inside the package (`_validate_ct_code` etc.) | `REG_ERROR (0x02)` + `EVENT_FLAGS.bit3` (`0x2A`) |
 | **When it fires** | Before the I²C transaction (the lib intercepts) | After the FW accepts a write and rejects it |
-| **What the master sees** | The setter raises `RbAmpParamError`; `REG_ERROR` on the device **stays 0x00** | `REG_ERROR` = the rejection code immediately; `bit3` latches **~200-300 ms** after the transaction |
+| **What the master sees** | The setter raises `RbAmpParamError`; `REG_ERROR` on the device **stays 0x00** | `REG_ERROR` = the rejection code immediately; `bit3` latches **a few hundred milliseconds** after the transaction |
 | **Sticky** | no (just an exception) | `REG_ERROR` last-write; `bit3` sticky W1C |
 | **Typical path** | An argument outside the allowed bounds (channel ∉ {0,1,2}, code ∉ characterized set, sensor_class out-of-enum) | A raw register write that the package does not pre-validate (low-level `dev._io.write_reg()` with an invalid byte) |
 
@@ -800,7 +1077,7 @@ the second channel kicks in:
   **immediately** after your write, before any other transaction.
 - **`has_error()`** — the sticky W1C indicator of
   `EVENT_FLAGS.bit3`. **It does not latch instantly**: on the bench,
-  a delay of **~200-300 ms** was measured between the rejected
+  a delay of **a few hundred milliseconds** was measured between the rejected
   transaction and bit3 being set.
 
 > ⚠ **Do not use `has_error()` to validate a write you just made.**
@@ -813,7 +1090,7 @@ the second channel kicks in:
 
 ### Clearing a durable error — clear both (REG_ERROR and bit3)
 
-`bit3` is re-derived by the firmware every ~200-300 ms from the
+`bit3` is re-derived by the firmware every few hundred milliseconds from the
 current state of `REG_ERROR`. So a simple `clear_event_flags(1 << 3)`
 **will not work** — bit3 is immediately **re-set** from the
 not-yet-cleared `REG_ERROR`. The correct order:
@@ -860,8 +1137,8 @@ own CT-sensor model. The atomic utility for bulk configuration is
 ### `dev.configure_channels(cls: RbAmpSensorClass, models: Sequence[int], n: int = None) -> None`
 
 Parameters:
-- `cls` — the sensor class (`RbAmpSensorClass.SCT_013` validated on
-  the v1.3 bench; `WIRED_CT`/`BUILTIN_CT` reserved).
+- `cls` — the sensor class (`RbAmpSensorClass.SCT_013` for the
+  SCT-013 clamps; `WIRED_CT`/`BUILTIN_CT` reserved).
 - `models` — a sequence of CT-model codes (one per channel).
 - `n` — the length (optional; default = `len(models)`).
 
@@ -882,10 +1159,9 @@ channel count, the extra elements are ignored.
 - `RbAmpIOError` — bus error.
 - `RbAmpTimeoutError` — flash-write timeout.
 
-> Per-class characterized codes (v1.3 firmware):
-> `SCT_013 → {1, 2, 3, 4, 6}`; `5` (SCT-013-100) and `7`
-> (SCT-013-060) reserved-uncharacterised → `RbAmpParamError`
-> pre-bus. See [03 · Sensor selection](03_sensor_selection.md).
+> Per-class accepted codes:
+> `SCT_013 → {1, 2, 3, 4, 5, 6, 7}`; a code outside the set raises
+> `RbAmpParamError` pre-bus. See [03 · Sensor selection](03_sensor_selection.md).
 
 ### `dev.read_ct_model_ch(ch: int) -> int`
 
@@ -972,6 +1248,16 @@ modules. On I variants there is no active power → they contribute
 `0`. In the canon, 80% of the result ≈ the active power of the
 mains module.
 
+### `fleet.aligned_snapshot(group=0) -> list[dict]`
+
+Fleet-wide coherent period latch across **all channels** of every
+member: broadcasts a General-Call latch, then reads each in-sync member's
+latched average power for every channel (`read_period_avg_p`). Returns one
+dict per member, in fleet order, with keys `addr`, `in_sync`,
+`period_valid`, `avg_p` (list, one entry per channel; `None` if the member
+missed the tick or did not answer). The latch aligns the period averages
+only — live readings (`I`, `P`, `PF`) cannot be aligned across channels.
+
 ### Addressing and conflict checking
 
 ```python
@@ -1008,10 +1294,10 @@ fleet.gc_latch(group: int = 0, tick: int | None = None,
 fleet.check_sync(expected_tick: int) -> list[RbAmpFleetSync]
 ```
 
-For billing-grade snapshot synchronicity (skew < 1 ms across the
+For tight snapshot synchronization (skew < 1 ms across the
 whole fleet), an I²C General-Call broadcast latch is used.
 
-1. `enable_gc_all(group)` sets `FLEET_CONFIG.bit0` +
+1. `enable_gc_all(group)` sets the `GC_ENABLE` flag of FLEET_CONFIG +
    `GROUP_ID` on all fleet modules, issues `CMD_SAVE_USER_CONFIG`
    on each (persistent). A reboot of the modules is mandatory after
    enable — done automatically. Returns the number of modules where
@@ -1037,7 +1323,7 @@ These methods work with a **single** module directly (without a fleet).
 
 ### `dev.enable_gc(enable: bool = True) -> None`
 
-`enable_gc(True)` writes `1` into `FLEET_CONFIG.bit0 (0x27)` + saves
+`enable_gc(True)` writes `1` into the `GC_ENABLE` flag of FLEET_CONFIG (0x27) + saves
 to flash + resets — the module will start accepting GC latches after
 boot. `enable_gc(False)` clears the bit symmetrically. **Blocks for
 ~1 second** (SAVE_USER_CONFIG settle + reset settle). Idempotent:
@@ -1073,10 +1359,10 @@ A static method. A **legacy wrapper** — equivalent to
 the explicit `broadcast_latch_group` form with its own tick for
 witness verification is preferred.
 
-> **Precondition**: capability `CAP_GC_LATCH` (bit1 of
-> `REG_CAPABILITY 0x57`) must be set on the firmware **and** GC
+> **Precondition**: the General-Call latch capability
+> (`CAP_GC_LATCH`, reported by `REG_CAPABILITY`) must be set on the firmware **and** GC
 > must be **enabled** on each module (`dev.enable_gc(True)` or
-> `fleet.enable_gc_all()` flips `FLEET_CONFIG.bit0`, default OFF).
+> `fleet.enable_gc_all()` flips the `GC_ENABLE` flag of FLEET_CONFIG, default OFF).
 > A fresh module with factory defaults does **not accept** GC — by
 > design, a guard against an accidental broadcast on a bring-up
 > bus. If GC is disabled across the whole fleet, the bus rejects
@@ -1140,6 +1426,13 @@ print("sanity rejects:",    dev.sanity_reject_count)
 `SMBusBackend` (CPython) has no retry layer — the Linux kernel I²C
 driver is not subject to the NACK pattern.
 
+### `dev.read_seq_digest() -> int`
+
+Reads the digest sequence byte (0..255). It changes whenever the module
+commits a new reading set, so two reads that return the same value come
+from the same commit — useful as a coherence check around batched polling.
+It is a change marker only (no checksum).
+
 ### `dev.reset_counters() -> None`
 
 Zeroes all counters (RbAmp + the backend if it is a
@@ -1148,7 +1441,7 @@ Zeroes all counters (RbAmp + the backend if it is a
 ## Metadata and protocol constants
 
 ```python
-rbamp.__version__              # "1.3.0" — PEP 440 version
+rbamp.__version__              # "1.6.0" — PEP 440 version
 rbamp.__protocol_version__     # 0x04  — RBAMP_PROTOCOL_VERSION (v1.3)
 rbamp.RBAMP_REG_SCHEMA_CRC32   # CRC32 of the schema codegen contract
 ```
@@ -1179,7 +1472,7 @@ A burst-read `<addr> + N bytes` returns N consecutive bytes starting at `addr`. 
 
 ### Register writes — byte-at-a-time (NOT auto-increment)
 
-⚠ **Writes do NOT auto-increment** (root F.13 HW-confirmed). A burst-WRITE `<addr> + N bytes` lands only the first byte.
+⚠ **Writes do NOT auto-increment**. A burst-WRITE `<addr> + N bytes` lands only the first byte.
 
 **A multi-byte register is written byte by byte**:
 
@@ -1212,7 +1505,7 @@ The authoritative SKU byte is `REG_HW_VARIANT (0x55)` (`dev.hw_variant`):
 
 ### General-Call broadcast latch
 
-**Opt-in per-module** via `REG_FLEET_CONFIG.bit0` — `GC_ENABLE`. **Default OFF**. Enabled via `CMD_SAVE_USER_CONFIG` + `CMD_RESET`. After the reset, the module listens for the broadcast frame on addr `0x00`:
+**Opt-in per-module** via the `GC_ENABLE` flag of `REG_FLEET_CONFIG`. **Default OFF**. Enabled via `CMD_SAVE_USER_CONFIG` + `CMD_RESET`. After the reset, the module listens for the broadcast frame on addr `0x00`:
 
 ```
 addr=0x00 | A5 27 <group> <tick_lo> <tick_hi>

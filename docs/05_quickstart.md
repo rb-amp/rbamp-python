@@ -16,7 +16,14 @@ choosing an SCT-013 by range), see the neighboring chapters:
 
 ## What you'll need
 
-- An rbAmp module (any tier, UI1 for simplicity)
+> ⚠ **Mains safety.** Mains voltage can kill. Disconnect and lock out the
+> circuit before connecting the L/N terminals or fitting the clamp; have a
+> qualified person do mains wiring and any work inside a panel. Clamp **one**
+> conductor only (L) — never the whole cable (clamping L and N reads ~0). The
+> clamp itself is contactless.
+
+
+- An rbAmp module (any module line, UI1 for simplicity)
 - One of these hosts:
   - **CPython**: Raspberry Pi (any model) / Orange Pi 5 / Rock Pi 5
     / x86 + USB-I²C dongle
@@ -26,12 +33,19 @@ choosing an SCT-013 by range), see the neighboring chapters:
 - A 5 V supply to power the module (from the host's USB-5V or external)
 - An AC circuit to measure (a lamp, kettle, or household appliance)
 
+## Which path do I follow?
+
+Check `dev.is_std` (or the SKU label on the module — see
+[02 · Module lines](02_tiers.md)). **STD module:** skip Steps 4-5 and go to
+[06 · Examples](06_examples.md), Scenario 11. **BASIC module:** follow all steps.
+Step 3 and Step 4 are the same for both.
+
 ## Step 1 — Installing the package
 
 ### CPython (on a Linux SBC or x86)
 
 ```sh
-pip install rbamp smbus2
+pip install rbamp
 ```
 
 (On a Debian/Ubuntu system you can use the system `smbus2`
@@ -41,7 +55,7 @@ from pip is recommended — it supports the `with SMBus(...)` context manager.)
 Verify:
 
 ```sh
-rbamp --version          # rbamp 1.1.0
+rbamp --version          # rbamp 1.6.0
 rbamp --bus 1 scan       # I²C scan, should show 0x50
 ```
 
@@ -77,29 +91,41 @@ resistors — for a single module no external ones are needed.
 The full pinout table for each host is in
 [04 · Wiring](04_hardware.md).
 
-The SCT-013 CT clamp snaps around the **line conductor (L)**, with
+The SCT-013 CT clamp snaps around the **line conductor (L) only**, with
 the arrow on the clamp body pointing **in the direction of current
 toward the load**. See more in [04 · Wiring](04_hardware.md).
 
+> ⚠ **Mains safety.** Mains voltage can kill. Disconnect and lock out the
+> circuit before connecting the L/N terminals or fitting the clamp; have a
+> qualified person do mains wiring and any work inside a panel. Clamp **one**
+> conductor only (L) — never the whole cable (clamping L and N reads ~0). The
+> clamp itself is contactless.
+
+
 ## Step 3 — First script (RT read)
 
-A minimal script — a connectivity check without sensor configuration.
+A minimal script: tell the module which clamp you use (once), then read
+U / I / P / PF. Model codes are listed in Step 4; `3` below is SCT-013-030.
+The module line / variant table is in [02 · Module lines](02_tiers.md).
 
 ### CPython version
 
 ```python
 import time
 from smbus2 import SMBus
-from rbamp import RbAmp, RbAmpError
+from rbamp import RbAmp, RbAmpError, RbAmpSensorClass
 
 with SMBus(1) as bus:
     with RbAmp(bus, 0x50) as dev:
         # the context manager's __enter__ automatically calls dev.begin()
-        # v1.3: variant autodetect via REG_HW_VARIANT (canonical path).
+        # the module variant is detected automatically
         variant = dev.read_variant()
         label = dev.read_label() or "(unset)"
         print(f"Module ready: variant={variant}  label={label!r}")
-        # variant: 1=UI1, 4=I1, 5=I2, 6=I3
+        # variant codes: see the table in 02 · Module lines
+        # Once per installation (saved in the module's flash):
+        dev.set_sensor_class(RbAmpSensorClass.SCT_013)
+        dev.set_ct_model(3)   # SCT-013-030, see Step 4
         while True:
             try:
                 print(f"U={dev.voltage:.1f}V  "
@@ -122,10 +148,12 @@ python quick_read.py
 ```python
 import time
 from machine import I2C, Pin
-from rbamp import RbAmp, RbAmpError
+from rbamp import RbAmp, RbAmpError, RbAmpSensorClass
 
 i2c = I2C(0, scl=Pin(22), sda=Pin(21), freq=50_000)   # ESP32 default
 with RbAmp(i2c, 0x50) as dev:
+    dev.set_sensor_class(RbAmpSensorClass.SCT_013)   # once per installation
+    dev.set_ct_model(3)                              # SCT-013-030, see Step 4
     print("Module ready.")
     while True:
         try:
@@ -147,46 +175,28 @@ Run:
 mpremote run quick_read.py
 ```
 
-Expected output (without sensor calibration):
+Expected output with a load switched on (values depend on your load):
 
 ```text
 Module ready.
-U=230.4V  I=0.000A  P=0.0W  PF=nan
-U=230.4V  I=0.000A  P=0.0W  PF=nan
+U=230.4V  I=0.523A  P=119.8W  PF=0.987
 ```
 
 > `U` shows roughly the mains voltage (220-240 V for 230 V
-> networks) — this means the module is connected correctly. `I=0.000 A`
-> even with the load on is normal at this stage: the module doesn't
-> yet know which CT clamp is in use. With `I=0`, `PF` is
-> mathematically undefined (depending on the firmware it may be
-> `nan`, `0`, or a placeholder) — the exact form of the value
-> doesn't matter while the current is zero. The next step fixes this.
+> networks). With no load, `I` is ~0 and `PF` is undefined (it may print
+> `nan`, `0`, or a placeholder) — the exact form doesn't matter while the
+> current is zero. If `I` stays at 0.000 A with the load on, check the
+> clamp (one conductor, correct direction) and the model code, then see
+> [10 · Troubleshooting](10_troubleshooting.md).
 
 ## Step 4 — Current sensor configuration
 
-On v1.3 you **must** tell the module the sensor class and
-model. Without this, the calibration coefficients are not loaded
-and the current readings stay at zero.
+You **must** tell the module the sensor class and model (done in
+Step 3's script). Without this, the calibration coefficients are not
+loaded and the current readings stay at zero. Always call
+`set_sensor_class()` first, then `set_ct_model(code)`.
 
-Add this at the start of the script after `with RbAmp(...) as dev:`. **The
-read loop stays the same as in Step 3** — only the setup changes:
-
-```python
-from rbamp import RbAmp, RbAmpSensorClass
-
-with SMBus(1) as bus, RbAmp(bus, 0x50) as dev:
-    # Step 1: sensor class. The current rbAmp SKU is SCT-013.
-    dev.set_sensor_class(RbAmpSensorClass.SCT_013)
-
-    # Step 2: model. For example, SCT-013-030 for a household feed up to ~7 kW.
-    dev.set_ct_model(3)
-
-    print("Ready.")
-    # ...the same read-loop as in Step 3...
-```
-
-Model codes:
+Choose the code that matches your clamp:
 
 | `code` | Model | Range | Typical use |
 |:---:|---|---|---|
@@ -204,15 +214,7 @@ More on selection — [03 · Current sensor selection](03_sensor_selection.md).
 >
 > On subsequent runs of the script you don't need to call
 > `set_sensor_class()` and `set_ct_model()` (the module remembers).
-> But it doesn't hurt either — calling again with the same value
-> rewrites the same byte.
-
-After restarting the script the correct current value should appear:
-
-```text
-Ready.
-U=230.4V  I=0.523A  P=119.8W  PF=0.987
-```
+> Calling them again with the value the module already holds is a no-op.
 
 ## Step 5 — Energy accounting (Wh)
 
@@ -228,6 +230,18 @@ E_Wh += avg_P × master_dt_s / 3600
 
 where `master_dt_s` is the seconds between two successful calls to
 `dev.read_period_snapshot()`.
+
+> **Wait one full period before the first `read_period_snapshot()`.**
+> `begin()` already starts a period, so a snapshot taken right after it
+> covers only a fraction of a second and Wh will read ~0. The loops below
+> sleep 60 s first for this reason.
+>
+> **The Wh counter is kept in memory.** It restarts from 0 after a script
+> restart or reboot. For an absolute total, store `dev.energy.wh(0)`
+> yourself. On BASIC modules export is not counted (see
+> [02 · Module lines](02_tiers.md)). On an STD module use
+> `read_std_energy()` instead (Scenario 11 in
+> [06 · Examples](06_examples.md)).
 
 A minimal periodic-accounting template (once a minute):
 
@@ -299,14 +313,12 @@ What `read_period_snapshot()` does under the hood:
 3. Checks the ready flag (`snap.valid`); reads the average/peak
    power.
 4. Updates the internal Wh counter: `dev.energy.wh(ch) += avg_p[ch] × dt / 3600`.
-5. On a stale snapshot it raises `RbAmpStaleError` — the package
-   still records the master timestamp so the next snapshot doesn't
-   double-count on `dt`.
+5. On a stale snapshot it raises `RbAmpStaleError` and keeps the
+   previous timestamp, so the next successful snapshot covers the full
+   interval and Wh stays exact.
 
-The first call after `dev.begin()` is a primer: the module returns
-whatever it has accumulated since power-on (an interval unsuitable
-for tariff accounting). The package itself knows this snapshot must
-be discarded — user code never sees it.
+`dev.begin()` starts the first period itself (a primer) and discards what
+the module accumulated since power-on, so user code never sees that data.
 
 Expected output:
 
@@ -376,13 +388,13 @@ The MicroPython version is identical — replace `SMBus(1)` with
 In the canonical 80% scenario, one of the modules is a `UI1` on the
 mains feed (it provides `total_power()` and `total_energy_wh()`), and
 the rest, `I2`/`I3`, are current sub-meters. The details and advanced
-scenarios (mains+sub-loads disaggregation, GC sync for billing-grade
+scenarios (mains+sub-loads disaggregation, GC sync for tightly synchronized
 snapshots, provisioning workflow) are in chapter 06.
 
 ## What's next
 
 - [01 · Overview](01_overview.md) — what rbAmp is and what the package does
-- [02 · Module tiers](02_tiers.md) — which tier for which task
+- [02 · Module lines](02_tiers.md) — which module line for which task
 - [06 · Examples](06_examples.md) — working scenarios: **mains + N
   sub-loads (the 80% canon)**, provisioning workflow, multi-channel
   mixed-CT, fleet GC sync, MQTT, deep-sleep, async-streaming
@@ -394,6 +406,6 @@ snapshots, provisioning workflow) are in chapter 06.
   (including `RbAmpFleet` + Multi-channel + Error model v1.3 +
   Identity & Provisioning)
 - [10 · Troubleshooting](10_troubleshooting.md) — if something doesn't work
-  (MicroPython@ESP32 i2c-hang three-layer, L9 27% expected,
+  (MicroPython@ESP32 i2c-hang three-layer, latch_ms is a diagnostic timer,
   RbAmpStaleError master-hold-anchor)
 

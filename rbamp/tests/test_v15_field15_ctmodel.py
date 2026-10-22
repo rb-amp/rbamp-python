@@ -309,7 +309,7 @@ def test_flat_path_still_uses_reg_cmd_wire_canon():
 def test_set_ct_model_ch_uses_save_user_config_not_save_gains_flat():
     """Flat ch0-2 path: persist via CMD_SAVE_USER_CONFIG (production-ungated).
 
-    CMD_SAVE_GAINS is develop-gated in production firmware; using it there
+    CMD_SAVE_GAINS is factory-gated in production firmware; using it there
     silently no-ops for user persist — latent bug that ships as "worked in
     dev, doesn't persist in prod". esp-idf hit this and switched; the
     Python library switched in v1.5.0 as part of the field15 release.

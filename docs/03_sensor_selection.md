@@ -21,10 +21,8 @@ before selecting a specific CT clamp model.
 
 ## Choosing an SCT-013 model
 
-Within the SCT-013 family, five models are characterized on the current
-bench (codes `{1, 2, 3, 4, 6}`); codes `5` and `7` exist in the API and
-SPEC but are not yet validated and are **rejected** by the library
-client-side (pre-bus, with no I²C transaction).
+Within the SCT-013 family, seven models are supported (codes
+`{1, 2, 3, 4, 5, 6, 7}`).
 
 | `code` | Model | Current range | Status | Typical use |
 |:---:|---|---|:---:|---|
@@ -32,19 +30,19 @@ client-side (pre-bus, with no I²C transaction).
 | **2** | SCT-013-010 | 0…10 A | ✅ characterized | One medium-power appliance — fridge, washing machine, air conditioner up to 2 kW |
 | **3** | SCT-013-030 | 0…30 A | ✅ characterized | Mid-size household service entry — up to ~7 kW |
 | **4** | SCT-013-050 | 0…50 A | ✅ characterized | Large service entry — electric heating, EV charger, single-family home with peak loads |
-| **5** | SCT-013-100 | 0…100 A | ⏳ uncharacterized | (Main service entry; code reserved, requires bench validation.) |
+| **5** | SCT-013-100 | 0…100 A | ✅ characterized | Main service entry |
 | **6** | SCT-013-020 | 0…20 A | ✅ characterized | Medium service entry — 3–4 kW appliances, heavy household equipment |
-| **7** | SCT-013-060 | 0…60 A | ⏳ uncharacterized | (Industrial sub-meter; code reserved, requires bench validation.) |
+| **7** | SCT-013-060 | 0…60 A | ✅ characterized | Industrial sub-meter |
 
-> **Production-safe codes — `{1, 2, 3, 4, 6}`**. Calling
-> `dev.set_ct_model_ch(ch, 5)` or `dev.set_ct_model_ch(ch, 7)`
-> (or passing such a code to `dev.configure_channels(...)`)
+> **Accepted codes — `{1, 2, 3, 4, 5, 6, 7}`**. Calling
+> `dev.set_ct_model_ch(ch, code)` with a code outside this set, for example
+> `0` or `8` (or passing such a code to `dev.configure_channels(...)`)
 > raises **`RbAmpParamError`** — the library **does not send** the write
 > to the device (client-side guard `_validate_ct_code`,
 > `REG_ERROR` on the device stays `0x00`).
 >
-> Per-class accepted sets (v1.3 firmware):
-> - `RbAmpSensorClass.SCT_013` → `{1, 2, 3, 4, 6}`
+> Per-class accepted sets:
+> - `RbAmpSensorClass.SCT_013` → `{1, 2, 3, 4, 5, 6, 7}`
 > - `RbAmpSensorClass.WIRED_CT` → `{1, 2, 3}` (factory preset slots)
 > - `RbAmpSensorClass.BUILTIN_CT` → `∅` (onboard CT, no codes)
 >
@@ -53,25 +51,21 @@ client-side (pre-bus, with no I²C transaction).
 
 ### How to pick the right model
 
-The basic rule:
-
-1. **Determine the maximum current** that can flow in the circuit
-   (based on the largest load + 30% headroom).
-2. Choose the model whose range covers that value.
-3. **Do not over-size by more than 5×**. An SCT-013-100 clamp on a
-   circuit with a maximum current of 5 A will work, but it gives low
-   resolution and large error at typical values.
+The one rule: **choose the smallest rated clamp above your largest
+expected current.** An oversized clamp (for example a 100 A clamp on a
+circuit that never exceeds 5 A) still works, but gives low resolution
+and a large error at typical values.
 
 ### Headroom
 
 An SCT-013 clamp operates without saturation within its rated range.
 Short-lived peaks (compressor inrush, inductive load) can exceed the
-rating by 5–7× — this is **normal**, the clamp physically withstands it,
-but measurement becomes non-linear above the rating.
+rating — the clamp withstands it, but measurement becomes non-linear
+above the rating.
 
-If your load has a peak current above the clamp's rating, go one size
-up. For example, for a washing machine with a 12 A inrush current (and a
-2–3 A rating during operation) SCT-013-030 is better than SCT-013-005.
+Count a regular inrush as part of your "largest expected current". For
+example, for a washing machine with a 12 A inrush current (and 2–3 A
+during operation) SCT-013-030 is better than SCT-013-005.
 
 ## How to tell the module about your choice
 
@@ -101,17 +95,17 @@ with RbAmp(bus, 0x50) as dev:
         # Possible causes: communication failure (see 10 · Troubleshooting),
         # invalid argument (cls outside the known values)
         print("set_sensor_class failed:", e)
-        return
+        raise SystemExit(1)
 
     # Step 2: model within the family.
     # 1 = SCT-013-005, 2 = SCT-013-010, 3 = SCT-013-030,
-    # 4 = SCT-013-050, 6 = SCT-013-020 (code 5 reserved).
+    # 4 = SCT-013-050, 5 = SCT-013-100, 6 = SCT-013-020, 7 = SCT-013-060.
     try:
         dev.set_ct_model(3)   # e.g. SCT-013-030
     except RbAmpModeError:
         print("Sensor class must be set first")
     except ValueError:
-        print("Code not in per-class accept-set (SCT_013: {1,2,3,4,6})")
+        print("Code not in per-class accept-set (SCT_013: {1,2,3,4,5,6,7})")
 ```
 
 `set_sensor_class()` accepts **either an enum or a plain int** —
@@ -148,6 +142,8 @@ is not repeated again.
 > `set_sensor_class()` and `set_ct_model()` calls — the module remembers
 > the previous choice. But there is no harm either — calling again with
 > the same value just rewrites the same byte.
+
+> **Model change and restart.** On module firmware up to 1.4.19 a model change restarts the module once (about a second); from 1.4.20 the module corrects itself. The SCT rating correction scales current, power and energy, never voltage or power factor.
 
 ### Verifying the setup
 
@@ -221,13 +217,13 @@ The API for per-channel selection is `dev.set_ct_model_ch(channel, code)`:
 ```python
 dev.set_sensor_class(RbAmpSensorClass.SCT_013)   # once for all channels
 
-# v1.3: binding order does NOT matter (Fix A pure-staging).
+# Binding order does NOT matter.
 dev.set_ct_model_ch(0, 1)   # channel 0: SCT-013-005
 dev.set_ct_model_ch(1, 3)   # channel 1: SCT-013-030
 dev.set_ct_model_ch(2, 6)   # channel 2: SCT-013-020 (I3 only)
 ```
 
-> ✅ **v1.3: channel binding order does not matter** (Fix A pure-staging). On v1.3 writing `REG_CT_MODEL (0x05)` stages the value but **no longer applies** it automatically to ch0. Application happens **only** via `CMD_SET_CT_MODEL_CHn`. This means you can configure channels in **any order** — with no clobber.
+> ✅ **Channel binding order does not matter.** Writing `REG_CT_MODEL (0x05)` stages the value but **no longer applies** it automatically to ch0. Application happens **only** via `CMD_SET_CT_MODEL_CHn`. This means you can configure channels in **any order** — with no clobber.
 
 The single-argument `dev.set_ct_model(code)` is a convenience form for
 single-channel SKUs (applied to channel 0). On multi-channel modules it
@@ -264,10 +260,10 @@ The master itself chooses which channel to use depending on the current
 value — while the small clamp is in its linear range, its reading is
 more accurate; once it is exceeded, it switches to the large one.
 
-### Configuration (order-independent on v1.3)
+### Configuration (order-independent)
 
 First the sensor class **once**, then the models per channel **in any
-order**. On v1.3 firmware (Fix-A pure-staging), writing
+order**. On current firmware, writing
 `REG_CT_MODEL (0x05)` only **stages** the value; binding to a specific
 channel happens exclusively via the per-channel `CMD_SET_CT_MODEL_CHn`
 opcode. The legacy "descending order" workaround required on v1.2
@@ -276,7 +272,7 @@ firmware is **no longer needed**.
 ```python
 dev.set_sensor_class(RbAmpSensorClass.SCT_013)   # once
 
-# Any order is valid on v1.3 — each call binds its own channel.
+# Any order is valid — each call binds its own channel.
 dev.set_ct_model_ch(0, 1)   # ch0 = SCT-013-005 (0..5 A)
 dev.set_ct_model_ch(1, 3)   # ch1 = SCT-013-030 (0..30 A)
 ```
@@ -301,10 +297,8 @@ def read_combined_current(dev):
     # accuracy at low currents. Switch to the large one when
     # approaching the overload point.
     #
-    # The 4.5 A threshold for SCT-013-005 is PROVISIONAL; the exact
-    # value will be determined by bench validation (see below).
-    # Behavior in the vicinity of the threshold is a matter of
-    # measurement, not estimation.
+    # The 4.5 A threshold for SCT-013-005 is an example value;
+    # pick the switch-over point for your own installation.
     if not math.isnan(i_low) and i_low < 4.5:
         return i_low
     return i_high
@@ -314,11 +308,10 @@ def read_combined_current(dev):
 
 <!-- MD028 separator -->
 
-> ⚙ **Bench validation.** The exact figures of the dual-CT pattern
-> (behavior in the vicinity of the threshold, temperature drift, the
-> divergence of the two clamps in the overlapping range) are established
-> by the factory bench-validation program . Until it is
-> complete, treat dual-CT as a pilot pattern; for critical applications a
+> ⚙ **Dual-CT figures.** Figures for low-current dual-CT use are not
+> published (behavior in the vicinity of the threshold, temperature drift,
+> the divergence of the two clamps in the overlapping range). Treat dual-CT
+> as a pilot pattern; for critical applications a
 > single clamp matched to the upper end of the load range is preferable.
 
 ### Approaches to improving sensitivity at low currents
@@ -329,7 +322,7 @@ sized for the upper limit loses the lower currents in the noise.
 
 Three strategies in increasing order of complexity:
 
-1. **Size the CT for the maximum, not "with headroom"**. The most
+1. **Size the CT to the largest expected current** (the rule above). The most
    common mistake is to put an SCT-013-100 (100 A) on a home outlet with
    a typical consumption of 0.5–10 A. The signal sits in the lower 1–10%
    of the ADC — where noise becomes comparable to the signal. For a
@@ -338,13 +331,10 @@ Three strategies in increasing order of complexity:
 2. **Dual-CT topology** (requires a UI2/UI3 SKU): a small clamp on the
    lower range + a large one on the upper, with the master choosing by
    threshold. See the "Dual-CT topology" section above — the pattern is a
-   pilot one, the numbers are being refined by the factory bench-validation program.
-3. **Bench calibration of the noise floor** (factory-side): the factory bench-calibration program
-   characterizes the noise floor on the test bench; the results are baked
-   into the firmware's calibration array. On the user side, there is
-   nothing to do beyond `set_sensor_class()` + `set_ct_model()`. Until the
-   program is complete, the specific low-current accuracy figures are not
-   published.
+   pilot one; low-current dual-CT figures are not published.
+3. **Noise floor** is handled on the factory side. On the user side, there
+   is nothing to do beyond `set_sensor_class()` + `set_ct_model()`. Figures
+   for low-current dual-CT use are not published.
 
 ## Production vs Factory mode (persistence reference)
 
@@ -362,17 +352,17 @@ The rbAmp module operates in two modes, differing in **what exactly is saved to 
 
 In production mode, writes of factory calibration are **rejected by the firmware** — protection against accidentally erasing the factory coefficients.
 
-> **Read-back ≠ persistence** (v1.3 A7 HW-verified). The production guard accepts the write into RAM (a subsequent read returns what was written), but the flash-save may be rejected. **The only valid way to confirm persistence is to reboot the module via `CMD_RESET` and read again**:
+> **Read-back ≠ persistence** . The production guard accepts the write into RAM (a subsequent read returns what was written), but the flash-save may be rejected. **The only valid way to confirm persistence is to reboot the module via `CMD_RESET` and read again**:
 >
 > ```python
 > dev.set_ct_model(code)
 > dev.reset()                     # CMD_RESET 0x01, works in production
-> time.sleep(0.3)                 # boot complete (300 ms canonical)
+> time.sleep(0.3)                 # boot complete (300 ms)
 > check = dev.read_reg(0x05)
 > assert check == code            # ONLY now is persistence confirmed
 > ```
 >
-> **The address is an exception** (v1.3 A2 Fix 4): `REG_I2C_ADDRESS` reads the **active** address at boot. After staging it echoes the candidate until `CMD_COMMIT_ADDR` + reset.
+> **The address is an exception:** `REG_I2C_ADDRESS` reads the **active** address at boot. After staging it echoes the candidate until `CMD_COMMIT_ADDR` + reset.
 
 Cross-link: [09 · API reference](09_api_reference.md) — details on specific opcodes, [10 · Troubleshooting](10_troubleshooting.md) — what to do if persistence is not confirmed.
 

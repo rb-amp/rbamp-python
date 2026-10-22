@@ -101,7 +101,7 @@ periodically raises `RbAmpIOError` — and you are on **MicroPython +
 ESP32** — this is a documented baseline pattern: the I²C stack on
 the ESP32 port of MicroPython inherited quirks of the ESP-IDF v5
 driver, which when talking to rbAmp on the current firmware gives a
-~20 % NACK rate at 100 kHz.
+frequent NACKs at 100 kHz.
 
 The mitigation is already built into `MachineI2CBackend` (3 retries ×
 5 ms gap by default), but under heavy load the retry budget can run
@@ -155,6 +155,19 @@ If NACKs do happen on these platforms, look for:
 - **On the RPi**: check `dtparam=i2c_arm_baudrate` in
   `/boot/config.txt` — 100000 is recommended.
 
+## `PermissionError: [Errno 13]` on `/dev/i2c-1` (Linux)
+
+**What you see:** `SMBus(1)` raises `PermissionError`, while `sudo python`
+works. Your user is not allowed to open the I²C device. Fix:
+
+```sh
+sudo usermod -aG i2c $USER   # then log out and in again
+```
+
+Also make sure I²C is enabled (`sudo raspi-config` → Interface Options →
+I2C) and that `ls /dev/i2c-*` lists the bus; `sudo apt install i2c-tools`
+gives you `i2cdetect -y 1`.
+
 ## Current reads zero on a running load
 
 **What you see:** `dev.current[0]` (or `dev.read_current(0)`)
@@ -168,7 +181,7 @@ the cause is in the current.
 1. **Check that the sensor class and the CT model are configured:**
 
    ```python
-   from rbamp import RbAmp, RbAmpSensorClass, RbAmpModeError
+   from rbamp import RbAmp, RbAmpError, RbAmpSensorClass, RbAmpModeError
 
    try:
        dev.set_sensor_class(RbAmpSensorClass.SCT_013)
@@ -180,7 +193,7 @@ the cause is in the current.
    except RbAmpModeError:
        print("Class must be set first!")
    except ValueError:
-       print("Code not in per-class accept-set (SCT_013: {1,2,3,4,6})")
+       print("Code not in per-class accept-set (SCT_013: {1,2,3,4,5,6,7})")
    ```
 
    Without these two calls the calibration coefficients are not
@@ -224,9 +237,8 @@ Then the signal at the ADC really is below the noise floor. Check:
 - **Whether the clamp is intact** — there should be an AC voltage at
   the clamp connector proportional to the current (a few millivolts
   for consumer loads).
-- **Whether you are clamping the right wire** — the live wire, not
-  the neutral (though a clamp on the neutral will also work — it
-  measures current amplitude, not direction).
+- **Whether you are clamping the right wire** — one conductor only,
+  the live wire (L), not the whole cable (clamping L and N reads ~0).
 
 ## Readings jump around or raise `RbAmpIOError`
 
@@ -247,8 +259,9 @@ MicroPython):
 ```python
 from rbamp._io_micropython import MachineI2CBackend
 
-# Created explicitly at the start of the program
-backend = MachineI2CBackend(i2c, 0x50, retry_attempts=5)
+# Build the backend yourself, then pass IT (not the raw I2C object) to RbAmp.
+# This is where `backend` comes from; the address belongs to RbAmp.
+backend = MachineI2CBackend(i2c, retry_attempts=5)
 dev = RbAmp(backend, 0x50)
 
 # After a period of operation:
@@ -315,9 +328,9 @@ clamp correctly, or handle the sign on the application side
 `RbAmpStaleError` on every call. This means the module did not finish
 integrating the previous period by the time of the next read.
 
-The package guards against double-counting Wh: on a stale read it
-records the master timestamp, and the next successful snapshot covers
-one period, not two.
+On a stale read the package keeps the previous timestamp, so the next
+successful snapshot covers the full interval since the last good one and
+the Wh total stays exact (no double-count, no loss).
 
 **Acceptable:** rare stale reads (1–2 per hour at a 60 s cadence).
 **Not acceptable:** consecutive stale reads — that means the firmware
@@ -373,9 +386,9 @@ meter (Kill-A-Watt or similar).
    power value will be systematically biased.
 2. **Dropped stale snapshots:** if `dev.energy.wh(0)` is
    consistently lower than the reference, those may be missed
-   intervals — the snapshot came in stale, the package guarded
-   against double-count, but the interval measurement was lost. Check
-   the cadence (see above).
+   intervals. A single stale snapshot does not lose energy (the next
+   good one covers the full interval), but repeated failures or a script
+   that was not running do. Check the cadence (see above).
 3. **Master clock drift:** `time.monotonic()` (CPython) and
    `time.ticks_ms()` (MicroPython) are reliable in normal operation.
    But if the master goes into deep sleep, use the RTC memory +
@@ -393,11 +406,11 @@ meter (Kill-A-Watt or similar).
 
 The Wh accumulator inside the handle:
 
-| Runtime | Type | Long-term precision |
-|---|---|---|
-| CPython | 64-bit `float` (Python `float`) | drift < 1 LSB / year @ 60 s cadence |
-| MicroPython (ESP32 N16R8 + double-precision build) | 64-bit `float` | same |
-| MicroPython on ports without double-float | 32-bit `float` | ~0.01 % drift per day |
+| Runtime | Type |
+|---|---|
+| CPython | 64-bit `float` (Python `float`) |
+| MicroPython (double-precision build) | 64-bit `float` |
+| MicroPython on ports without double-float | 32-bit `float` |
 
 Checking precision on MicroPython (`sys.float_info` exists only on
 CPython; on uPy we use an empirical check):
@@ -500,32 +513,17 @@ on a wedged bus they return `IOError(Errno 110: ETIMEDOUT)` or
 needed on CPython** — Linux handles it itself. An external `~4.7 kΩ`
 pull-up is still desirable for signal integrity on a long bus.
 
-### `latch_ms` reads ~27% lower than the real period — this is EXPECTED, not a bug
+### `latch_ms` does not match the wall-clock period
 
-**What you see:** if, for your own diagnostics, you divide
-`snap.latch_ms` (the chip-side software timer) by the real wall-clock
-time between two `dev.read_period_snapshot()` calls, the ratio comes
-out at **~0.73** (i.e., the chip-side timer undercounts by ~27%).
+`latch_ms` is a module diagnostic timer; do not use it for energy — use the master clock.
 
-**This is by design and HW-validated** (bench measure across all 4
-sister libs: esp-idf 0.7396, arduino 0.729, python 0.743, esphome
-same). The cause is SysTick starvation on the slave: under load the
-DMA/ISR leaves too little cycle budget to increment the software
-timer regularly. `latch_ms` (register `0xEC`) is intended **only as a
-diagnostic indicator** of slave activity, **not for billing**.
+The library integrates energy by the master wall-clock: CPython —
+`time.monotonic()`; MicroPython — `time.ticks_ms()` +
+`time.ticks_diff()`. Master-side integration adds no error of its own beyond
+the module's active-power accuracy.
 
-> **Canon**: the library integrates energy by **master wall-clock**:
-> CPython — `time.monotonic()`; MicroPython — `time.ticks_ms()` +
-> `time.ticks_diff()`. The `rbamp` Wh accounting is **mathematically
-> exact** — bench measure: `rel_err = 0.0000%` (12.96 Wh lib vs
-> 12.96 Wh ground-truth). All 4 sister libs (arduino, esp-idf,
-> esphome, python) use the same canon.
-
-If your code relies on `snap.latch_ms` for some sub-period
-calculations, switch to your own `time.monotonic()` /
-`time.ticks_diff()`. If you simply see the discrepancy in the logs
-and are worried — it is normal; remove the discrepancy from your
-diagnostics or accept the 27% gap as expected.
+If your code relies on `snap.latch_ms` for sub-period calculations, switch to
+your own `time.monotonic()` / `time.ticks_diff()`.
 
 ### `RbAmpStaleError` on every read — the library keeps the anchor automatically
 
@@ -662,6 +660,14 @@ More detail — [03 · Current sensor selection](03_sensor_selection.md)
 and [09 · API reference](09_api_reference.md), the "Sensor
 configuration" section.
 
+Since 1.6.0 these setters are guarded read-before-write:
+
+- Setting the class or model the module **already holds** is a silent
+  no-op (re-applying would wipe the channel calibration).
+- On a **factory-paired** module (class `WIRED_CT` / `BUILTIN_CT`) a
+  different class or model is **refused** with `RbAmpModeError`. In a
+  service context use `dev.set_ct_model_ch_force(ch, code)`.
+
 `RbAmpModeError` also arises from `dev.factory_reset()` and
 `dev.save_gains()` (factory operations require factory mode). An
 address change on v1.3 is production-OK and does not raise
@@ -675,20 +681,20 @@ also inherits `ValueError` via multi-base).
 Possible causes:
 
 1. **Invalid model code** — for the `SCT_013` class the accepted set is
-   `{1, 2, 3, 4, 6}` (non-contiguous; code 5 is reserved in v1.3
-   firmware, formerly SCT-013-100; code 7 is uncharacterized). For other
+   `{1, 2, 3, 4, 5, 6, 7}` (codes 5 and 7 are SCT-013-100 and
+   SCT-013-060). For other
    classes, see the per-class accept-set table in
-   [03](03_sensor_selection.md#per-class-ct-validation). Values outside
+   [03 · Choosing an SCT-013 model](03_sensor_selection.md#choosing-an-sct-013-model). Values outside
    the accept-set raise `RbAmpParamError(ValueError)`.
 2. **Invalid channel index** in the per-channel form
    `dev.set_ct_model_ch(channel, code)` — it must be < `dev.channels`.
-3. **A reserved `RbAmpSensorClass` value** —
-   `RbAmpSensorClass.WIRED_CT` or `BUILTIN_CT` are not yet supported
-   (not present on the current SKU); use `SCT_013`.
+3. **A sensor-class value outside 0..3.** (`WIRED_CT` / `BUILTIN_CT`
+   are valid values, but a factory-paired module refuses to be
+   reconfigured — that raises `RbAmpModeError`, see below.)
 
 ## Error handling: `REG_ERROR` last-write + `EVENT_FLAGS.bit3` durable (v1.3)
 
-**v1.3 canon (HW-confirmed)**: `REG_ERROR (0x02)` is the
+**v1.3**: `REG_ERROR (0x02)` is the
 **last-write-outcome**, **not** sticky. On each register write the
 firmware sets `reg_error = ERR_OK`; a subsequent unrelated write
 **clears** the previous error.
@@ -716,13 +722,13 @@ if event_flags & (1 << 3):
     # or dev.clear_error()
 ```
 
-> ⚠ **REVERSAL** of the early "sticky" documentation (v1.3 A3 root
-> canon). REG_ERROR is the last-write-outcome, not sticky. Durability
+> ⚠ **REVERSAL** of the early "sticky" documentation (v1.3).
+> REG_ERROR is the last-write-outcome, not sticky. Durability
 > is provided by EVENT bit3.
 
 > ⚠ **bit3 is an async channel, not for synchronous write
 > validation**: on a rejected write, bit3 is set **with a delay**
-> relative to the moment the I²C transaction returns (~200-300 ms).
+> relative to the moment the I²C transaction returns (a few hundred milliseconds).
 > Do not poll bit3 right after a write to check that write's outcome —
 > for the outcome of **your own write** use **Pattern 1** (one-off
 > `read_last_error()` capture, immediate) or the `RbAmpParamError`
@@ -777,7 +783,7 @@ def robust_read_voltage(dev, attempts=5, gap_s=0.020):
 **What you see:** `prepare_address_change()` succeeded, but after the
 commit + reset the module does not respond at the new address.
 
-> ✅ **v1.3 (Fix 4)**: `REG_I2C_ADDRESS (0x30)` reads the **active**
+> ✅ **v1.3**: `REG_I2C_ADDRESS (0x30)` reads the **active**
 > address on boot. After the post-commit reboot, reading 0x30 at the
 > new address will show that same address — this confirms the commit
 > went through. If the module does not respond at the new address,
@@ -817,6 +823,32 @@ More on the public-but-warned methods — see
 section (the address-change subsection lives there together with
 `save_gains` and `factory_reset`).
 
+## `RbAmpNotSupportedError` (STD calls)
+
+**What you see:** a call such as `dev.read_std_energy()`,
+`dev.read_voltage_angle()`, `dev.read_phase_sequence()`,
+`dev.get_start_current()` or `dev.set_time()` raises
+`RbAmpNotSupportedError`.
+
+**Causes and what to do:**
+
+1. **The module is a BASIC module.** STD-only calls are not available on
+   BASIC. Check `dev.is_std`; on BASIC use the common readers
+   (`voltage`, `current`, `power`, `power_factor`, `frequency`) and the
+   period API instead.
+2. **The module image is too old for that feature.** Micro-unit energy
+   counters, voltage angles and the starting current need a recent enough
+   module image; on an older one the call reports "not available". The
+   common readers keep working.
+3. **`dev.is_std` is `False` on an STD module.** The library detects the
+   line using a 16-bit bus transaction; a bus object or adapter that cannot
+   do one is treated as BASIC. Use `smbus2` on CPython (validated), and see
+   [04 · Hardware](04_hardware.md).
+
+The same I²C wiring applies to both module lines. Note that on-device
+energy, angle and starting-current features are validated on CPython; the
+MicroPython 16-bit path is not yet hardware-validated.
+
 ## Exception summary table
 
 `RbAmpError` (a subclass of **`OSError`**) is the base class. An
@@ -828,10 +860,11 @@ Python convention for hardware-I/O drivers.
 |---|---|---|
 | `RbAmpIOError` | NACK after retry; sanity reject; bus-level failure | the "The module does not respond over I²C" section |
 | `RbAmpTimeoutError` | `wait_ready()` expired; the `commit_address_change` window (5 s) expired | the "`commit_address_change` returns `RbAmpTimeoutError`" section below |
-| `RbAmpNotReadyError` | (reserved; not raised in v1.1.0, exported for forward-compat) | if you catch this type — repro it in an issue |
+| `RbAmpNotReadyError` | (reserved; not raised by the library, exported for forward-compat) | if you catch this type — repro it in an issue |
 | `RbAmpStaleError` | period snapshot stale | the "Period snapshots are always `RbAmpStaleError`" section |
-| `RbAmpParamError` (on CPython also `ValueError`) | bad argument: `dev=None`, `ch` out of range, `code` not in the per-class accept-set (for `SCT_013` — `{1, 2, 3, 4, 6}`, code 5 reserved), a reserved `cls`. Also a precondition violation: `set_ct_model*()` without a preceding `set_sensor_class()` | check the call arguments + that `set_sensor_class()` was called |
-| `RbAmpModeError` | factory mode not set (factory_reset / save_gains; an address change on v1.3 is production-OK) | check the mode flag |
+| `RbAmpParamError` (on CPython also `ValueError`) | bad argument: `dev=None`, `ch` out of range, `code` not in the per-class accept-set (for `SCT_013` — `{1, 2, 3, 4, 5, 6, 7}`), a reserved `cls`. Also a precondition violation: `set_ct_model*()` without a preceding `set_sensor_class()` | check the call arguments + that `set_sensor_class()` was called |
+| `RbAmpModeError` | factory-only operation (factory mode not set;  an address change on v1.3 is production-OK); sensor class unset; factory-paired module refuses a class/model change | check the mode flag; `set_sensor_class()` first; `set_ct_model_ch_force()` for service use |
+| `RbAmpNotSupportedError` | STD-only call on a BASIC module, or an STD feature the module image does not provide | the "`RbAmpNotSupportedError`" section below |
 | `RbAmpVersionError` | `REG_VERSION` = 0/0xFF on `begin()` (the module does not respond or the firmware is corrupted). **Per-channel `set_ct_model_ch` on v1.0/v1.1 may NACK** (the opcode does not exist) and raise `RbAmpIOError`, not `RbAmpVersionError` — the version guard is NOT implemented client-side; check `dev.firmware_version` ≥ 0x03 before the call | check `dev.firmware_version` |
 
 All exceptions have a meaningful `__str__` message — the package
@@ -851,11 +884,6 @@ In a healthy soak run (the 1-hour long-soak harness) they all stay
 
 If any of these is non-zero in steady state, go back to the
 corresponding section above.
-
-> The long-soak harness `tests/test_long_soak.py` is run via
-> `pytest libs/python/rbamp/tests/test_long_soak.py --soak --bus N --addr 0x50`.
-> Its six acceptance criteria — see the "Long-soak regression
-> harness" section in README.md.
 
 ## Bus-level debug with a logic analyzer
 

@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Adds the STD module line (16-bit register map) alongside the existing modules, per-channel period energy on 5/7-channel modules, and an SCT-013 rating-switch correction. One `RbAmp` class serves both module lines; the module type is detected automatically at `begin()`.
 
 ### Added
+- SCT-013-060 and -100 are accepted (they were refused client-side as reserved); sensor-model clip limits updated to measured values.
 - STD module line (16-bit map), auto-detected. Common readers (`voltage`, `current`, `power`, `power_factor`, `frequency`) work on every module; STD-only calls raise `RbAmpNotSupportedError` on a module that does not provide them.
   - On-device energy: `dev.read_std_energy()` (active import/export/net + reactive, Wh/mWh/µWh, per-channel); `RbAmp.std_energy_delta(prev, now)` (power-cut-safe).
   - Multi-phase: `dev.read_voltage_angle(phase)`, `dev.read_phase_sequence()`, `dev.read_reactive(ch)`, `dev.read_apparent(ch)`.
@@ -40,7 +41,7 @@ sensor-model registry, and persist fix. Firmware: v1.4.18+.
   `dev.read_ct_model_ch(channel)` now accept `channel 0..channels-1`. Channels
   0-2 use the flat register path; channels 3+ use the channel-access window
   (field 15).
-- **Registry-driven model validation**: `libs/spec/sensor_models.yaml` is now the
+- **Registry-driven model validation**: the model registry is now the
   single source for CT model codes. Auto-generated into `rbamp/_sensor_models.py`;
   the old hand-maintained `_CT_ACCEPTED` dict is gone.
 - `RbAmpWindowField.CT_MODEL = 15` (public enum).

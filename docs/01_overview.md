@@ -5,8 +5,8 @@
 ## What rbAmp is
 
 **rbAmp** is a compact hardware module for precision measurement of
-AC mains parameters over the I²C interface. It is built on a
-Cortex M0+ microcontroller with an integrated isolated analog
+AC mains parameters over the I²C interface. It is built around a
+microcontroller with an integrated isolated analog
 front-end and factory calibration stored in flash.
 
 From an integrator's point of view the module behaves like a standard
@@ -16,11 +16,23 @@ source runs on **MicroPython** (with `machine.I2C`) and **CPython**
 (with `smbus2`) — the backend is selected automatically from the
 type of the bus object.
 
-## The library's main purpose — monitoring multiple loads
+## Terms used in these docs
 
-The `rbamp` Python package is designed **for working with a group of
-modules simultaneously** on a single I²C bus, not for controlling a
-single device. The canonical scenario is **one master module at the
+- **Module line** — BASIC or STANDARD (STD): the product line of the module (see [02](02_tiers.md)).
+- **Variant** — UI1, UI2, UI3, I1, I2, I3 (and UI5/UI7): how many current channels, and whether the module has a voltage input.
+- **Firmware version** / **module image version** — the software inside the module; some STD calls need a recent enough image.
+- **RT reading** — an instant reading (voltage, current, power), refreshed by the module every 100 ms.
+- **Period / latch** — a latch freezes the totals of the period so far and starts the next one; a **period snapshot** is the frozen result (average power per channel).
+- **Stale snapshot** — the module had no fresh snapshot ready; the library raises `RbAmpStaleError` and the next good snapshot covers the whole interval.
+- **Primer** — the first latch done by `begin()`; it discards what accumulated since power-up.
+- **GC (General Call)** — one broadcast I²C frame that makes several modules latch at the same instant.
+- **DRDY** — optional pin that pulses every ~100 ms when new RT data is ready.
+
+## One module or many
+
+**One module or many: start with one `RbAmp`; use `RbAmpFleet` for several.**
+The `rbamp` Python package works with a single module and also with a
+group of modules on a single I²C bus. The canonical multi-module scenario is **one master module at the
 mains feed plus N modules on individual loads**, all on one bus,
 driven by a single ESP32 / RPi / SBC. The library provides the
 **`RbAmpFleet`** class — a single object through which you scan the
@@ -75,7 +87,7 @@ that same handle directly — the fleet API is not needed.
 > measure **current only** — they have no voltage, active power, or
 > PF. Active energy (Wh) and power are computed **only on the
 > UI-variants** (which have a voltage front-end). In the canonical
-> deployment, the "mains-meter" role (billing energy) is played by a
+> deployment, the "mains-meter" role (metering energy) is played by a
 > single **UI1** at the mains feed; the sub-meter role (per-load
 > current detail) is played by **I2**/**I3** modules.
 
@@ -97,9 +109,9 @@ For details, see chapter **06 · Examples**, scenario 1
 | Period-averaged P | `float`, W | same as P |
 
 > **The RT value of active power `P` is always signed on any module
-> tier** (negative means export to the grid). The behavior of the
+> line** (negative means export to the grid). The behavior of the
 > period-averaged value (`snap.avg_p[ch]` in `RbAmpPeriodSnapshot`)
-> **depends on the module tier** — see the "Module tiers" section
+> **depends on the module line** — see the "Module lines" section
 > below and [02_tiers.md](02_tiers.md).
 
 ## Wiring
@@ -113,7 +125,7 @@ isolated.
 | `VCC` | **+5 V (4.5..5.5 V)**, current ~15 mA, peak ~25 mA |
 | `GND` | common with the host (**required**) |
 | `SDA`, `SCL` | I²C, **3.3 V logic, 5 V-tolerant**. Built-in pull-ups 4.7 kΩ |
-| `DRDY` | optional, open-drain LOW ~10 µs every ~200 ms |
+| `DRDY` | optional, open-drain LOW ~10 µs every ~100 ms |
 
 The default address is `0x50` (7-bit, change range `0x08..0x77`).
 The recommended speed for MicroPython on ESP32 is **50 kHz**; for
@@ -124,26 +136,28 @@ The full rules (bus length, pull-up recommendations on a
 multi-module bus, wiring diagrams for RPi / ESP32 / RP2040 / STM32)
 are in chapter [04 · Wiring](04_hardware.md).
 
-## Module tiers (quick cheat sheet)
+## Module lines (quick cheat sheet)
 
-The current rbAmp firmware implements only the **BASIC** tier —
-one-directional (consumption-only) metering following the logic of a
-classic mechanical meter:
+**BASIC** and **STANDARD** (STD) modules are shipping; STANDARD is supported
+by this library from 1.6.0. **PRO** is not implemented.
 
-| Tier | RT power `dev.power[ch]` | Period accumulator `snap.avg_p[ch]` | Package Wh counter |
+BASIC is one-directional (consumption-only) metering following the logic of
+a classic mechanical meter:
+
+| Module line | RT power `dev.power[ch]` | Period accumulator `snap.avg_p[ch]` | Package Wh counter |
 |---|---|---|---|
-| **BASIC** | signed (negative = export to the grid, visible in real time) | each **200 ms window** of average P is clamped to `max(P, 0)` before being added to the period accumulator | **monotonic** — consumption-only metering |
-| **STANDARD** | *planned for a future tier release* | *planned* — separate export accumulator | *planned* — bidirectional metering |
-| **PRO** | *planned for a future tier release* | *planned* + diagnostics | *planned* + additional counters |
+| **BASIC** | signed (negative = export to the grid, visible in real time) | each **100 ms window** of average P is clamped to `max(P, 0)` before being added to the period accumulator | **monotonic** — consumption-only metering |
+| **STANDARD** (STD) | signed | energy is kept on the module; read it with `read_std_energy()` | on-module energy registers (see chapter 02) |
+| **PRO** | not implemented | not implemented | not implemented |
 
-For details, see chapter [02 · Module tiers](02_tiers.md). At the
-package level the same `RbAmp` class is used regardless of tier; the
+For details, see chapter [02 · Module lines](02_tiers.md). At the
+package level the same `RbAmp` class is used regardless of module line; the
 differences show up in the values the module returns.
 
 > **Bidirectional metering on BASIC**: `dev.energy.wh(ch)` on the
-> BASIC tier gives consumption only. If you need to account for
+> BASIC module line gives consumption only. If you need to account for
 > export separately, sample the RT power `dev.power[0]` (or
-> `dev.read_power(0)`) at ~5 Hz and split the positive and negative
+> `dev.read_power(0)`) at ~10 Hz and split the positive and negative
 > samples into two accumulator variables yourself. For an example,
 > see [06_examples.md](06_examples.md), scenario "Bidirectional
 > metering on the master side".
@@ -194,9 +208,9 @@ with SMBus(1) as bus:
 
     bus.write_byte(0x50, 0x07)
     if bus.read_byte(0x50) & 0x01 == 0:
-        # snapshot is stale — t_latch STILL must be recorded,
-        # otherwise the next snapshot will count Wh over two periods
-        return
+        # snapshot is stale — keep the previous t_prev_latch, so the next
+        # good snapshot covers the full interval
+        raise SystemExit("stale snapshot")
 
     # ...read 4 bytes of avg_p, struct.unpack, integrate Wh:
     #   dt_s = time.monotonic() - t_prev_latch
@@ -218,8 +232,8 @@ Internally the package guarantees:
 - A 50 ms settle after `CMD_LATCH_PERIOD`, and a correct snapshot read.
 - A `valid` flag check before reading; on a stale snapshot it raises
   `RbAmpStaleError`.
-- Recording the time by the master clock even on a stale snapshot
-  (which protects against double-counting Wh on the next period).
+- Keeping the previous timestamp on a stale snapshot, so the next good
+  snapshot covers the full interval and Wh stays exact.
 - Per-channel Wh accumulation in double precision (CPython — 64-bit
   `float`; MicroPython — depends on the build, see
   [04 · Wiring](04_hardware.md)).
@@ -305,7 +319,7 @@ For all the typical tasks in the first rows, the package is the way to go.
                        ▼
 ┌─────────────────────────────────────────────────────┐
 │  rbAmp module at address 0x50                       │
-│   • U / I / P / PF measurement pipeline (~200 ms)   │
+│   • U / I / P / PF measurement pipeline (~100 ms)   │
 │   • Period accumulator (atomic CMD_LATCH_PERIOD)    │
 └─────────────────────────────────────────────────────┘
 ```
@@ -336,7 +350,7 @@ from rbamp import RbAmp, RbAmpStaleError, RbAmpError
 try:
     snap = dev.read_period_snapshot()
 except RbAmpStaleError:
-    # Snapshot is stale — the master timestamp has already been recorded by the package
+    # Snapshot is stale — the package keeps the previous timestamp, the next good snapshot covers the full interval
     continue
 except RbAmpError as e:
     log.warning("rbAmp failure: %s", e)
@@ -397,8 +411,8 @@ code          RbAmp                Backend             rbAmp module
   │◄─snap──────┤                    │                       │
 ```
 
-The atomic latch on the module side guarantees that every ADC
-micro-sample within a period lands in exactly one snapshot — no
+The atomic latch on the module side guarantees that every measurement
+within a period lands in exactly one snapshot — no
 duplication, no losses at the period boundary.
 
 ## Mapping to the direct register API
@@ -416,7 +430,7 @@ A table for those migrating from their own direct-access work:
 
 ## What's next
 
-- [02 · Module tiers](02_tiers.md) — which tier for which task
+- [02 · Module lines](02_tiers.md) — which module line for which task
 - [04 · Wiring](04_hardware.md) — pull-ups, bus length,
   per-host wiring (RPi / ESP32 / RP2040 / STM32)
 - [05 · Quickstart](05_quickstart.md) — the first working script for

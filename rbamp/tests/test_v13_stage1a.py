@@ -49,17 +49,17 @@ def test_ct_model_ch_canonical_order(mock_backend):
     assert write_seq[1] == (R.REG_COMMAND, R.CMD_SET_CT_MODEL_CH0 + 1), \
         f"expected CMD_SET_CT_MODEL_CH1 second, got {write_seq[1]!r}"
     # Third: CMD_SAVE_USER_CONFIG (v1.5.0: switched from CMD_SAVE_GAINS, which
-    # is develop-gated in production and silently no-ops user persist).
+    # is factory-gated in production and silently no-ops user persist).
     assert write_seq[2] == (R.REG_COMMAND, R.CMD_SAVE_USER_CONFIG), \
         f"expected CMD_SAVE_USER_CONFIG third, got {write_seq[2]!r}"
     # Sleep schedule: 5 ms settle then SETTLE_MS_SAVE_USER_CONFIG (700 ms)
     assert 5 in mock_backend.sleeps, \
         f"expected 5 ms settle between CMD_CHn and SAVE; sleeps={mock_backend.sleeps}"
     assert R.SETTLE_MS_SAVE_USER_CONFIG in mock_backend.sleeps
-    # Anti-regression: must NOT use CMD_SAVE_GAINS for user persist (dev-gated).
+    # Anti-regression: must NOT use CMD_SAVE_GAINS for user persist (factory-gated).
     assert R.CMD_SAVE_GAINS not in [w[2] for w in mock_backend.writes
                                     if w[1] == R.REG_COMMAND], \
-        "user setter must not emit CMD_SAVE_GAINS (develop-gated in production)"
+        "user setter must not emit CMD_SAVE_GAINS (factory-gated in production)"
 
 
 def test_ct_model_ch_descending_pattern_clobber_mitigation(mock_backend):

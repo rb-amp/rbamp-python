@@ -10,6 +10,12 @@ The module's mains side is already routed inside the enclosure and
 galvanically isolated — the user works only with the LV side (power +
 I²C + optional `DRDY`).
 
+> ⚠ **Mains safety.** Mains voltage can kill. Disconnect and lock out the
+> circuit before connecting the L/N terminals or fitting the clamp; have a
+> qualified person do mains wiring and any work inside a panel. Clamp **one**
+> conductor only (L) — never the whole cable (clamping L and N reads ~0). The
+> clamp itself is contactless.
+
 ## LV-side pinout
 
 The module runs on 3.3 V I²C logic and is **5 V tolerant** on the
@@ -21,7 +27,7 @@ signal lines. All LV pins are fully galvanically isolated from mains.
 | `GND` | Ground | Common with the host — **mandatory** |
 | `SDA` | I²C SDA | I²C data |
 | `SCL` | I²C SCL | I²C clock |
-| `DRDY` | Data-ready (optional) | Open-drain, LOW pulse ~10 µs every ~200 ms |
+| `DRDY` | Data-ready (optional) | Open-drain, LOW pulse ~10 µs every ~100 ms |
 
 ## Power
 
@@ -118,9 +124,10 @@ Cut them with a sharp blade:
 - **Recommended speed on CPython + Linux SBC**: **100 kHz** (the NACK
   pattern does not appear through the kernel I²C driver — the Linux
   smbus2 path does not have the retry problem described for ESP-IDF).
-- **Pointer auto-increment**: **NO**. Each byte read is a separate
-  transaction with an explicit register address. The package does this
-  correctly on its own; user code never sees it.
+- **Multi-byte access**: reads may be done as a burst (several bytes in
+  one transaction); **writes go byte by byte**, each with an explicit
+  register address. The package does this correctly on its own; user code
+  never sees it.
 
 ### Bus length
 
@@ -198,7 +205,7 @@ The wire protocol under the hood (for reference):
 6. wait ~300 ms; the module responds at the new address
 ```
 
-> ✅ **v1.3 addr-boot-sync**: `REG_I2C_ADDRESS (0x30)` at boot reads the
+> ✅ **Address readback**: `REG_I2C_ADDRESS (0x30)` at boot reads the
 > **active** address. After the post-commit reboot, reading 0x30 shows
 > the new active one. During staging it echoes the candidate until
 > commit. The library guarantees the arm-state is cleared via
@@ -230,13 +237,13 @@ At 50 kHz, a single read transaction ≈ 200-400 µs. A full RT block for one ch
 
 | Configuration | Bus per cycle | At 50 kHz | Max polling rate |
 |---|---|---|---|
-| 1× UI1, RT block | ~5 ms | < 5 ms | 100+ Hz (but the module updates at 5 Hz) |
-| 5× UI1, RT block | ~25 ms | ~25 ms | 5 Hz |
-| 16× I3, RT + period | ~400 ms | **400 ms > 200 ms** | **cannot keep up with the module** |
+| 1× UI1, RT block | ~5 ms | < 5 ms | 100+ Hz (but the module updates at 10 Hz) |
+| 5× UI1, RT block | ~25 ms | ~25 ms | up to 10 Hz |
+| 16× I3, RT + period | ~400 ms | **400 ms > 100 ms** | **cannot keep up with the module (10 Hz); ~2 Hz at best** |
 
-> The numbers are estimates. The exact values will be confirmed by a bench test.
+> The numbers are estimates.
 
-**Rule**: at 50 kHz, the comfortable limits are **8-10× I3** or **15-16× UI1** at 5 Hz polling.
+**Rule**: at 50 kHz the comfortable limits are **8-10× I3** or **15-16× UI1** at 5 Hz polling (every second module window), and roughly half of that at the full 10 Hz.
 
 #### Period sync — synchronizing the periods
 
@@ -258,7 +265,7 @@ time.sleep(0.050)
 snaps = [m.read_period_snapshot(skip_latch=True) for m in meters]
 ```
 
-Skew: 16 modules × ~1 ms/latch = ~16 ms relative to a 60-s period = 0.027%. Negligible for billing.
+Skew: 16 modules × ~1 ms/latch = ~16 ms relative to a 60-s period = 0.027%. Negligible for typical monitoring.
 
 **Strategy 2 — General-Call broadcast latch** (requires enabling on each module):
 
@@ -270,7 +277,7 @@ addr=0x00 | A5 27 <group> <tick_lo> <tick_hi>   (5 bytes)
 
 Skew = 0 (atomic). Pre-config (once on each fleet module):
 
-1. `dev.write_reg(0x27, 0x01)` (FLEET_CONFIG.bit0 = 1)
+1. `dev.write_reg(0x27, 0x01)` (sets the `GC_ENABLE` flag of FLEET_CONFIG)
 2. `dev.save_user_config()`
 3. `dev.reset()` (settle ~300 ms)
 
@@ -293,7 +300,7 @@ Use case — separating tariff groups.
 |---|---|---|
 | `i2c bus scan` shows several modules at the same address after a field add | A new module at `0x50` is conflicting | Re-address it separately before adding |
 | One module NACKs more often than the others | Cable fault / VCC drop | Check VCC under load |
-| After a GC frame, one module does not latch | `FLEET_CONFIG.bit0 = 0` or group mismatch | Check `REG_FLEET_CONFIG` and `REG_GROUP_ID` |
+| After a GC frame, one module does not latch | `GC_ENABLE` of FLEET_CONFIG is off or group mismatch | Check `REG_FLEET_CONFIG` and `REG_GROUP_ID` |
 
 Detailed multi-module scenarios are in [06 · Examples](06_examples.md).
 
@@ -313,12 +320,22 @@ I²C bus 1 is routed to the 40-pin header. On most models (1B+ / 2 / 3 /
 | `DRDY` | (optional) | any free GPIO with irq support |
 
 Enable the kernel I²C driver: `sudo raspi-config` →
-**3 Interface Options** → **I2C** → **Yes**. Or edit `/boot/config.txt`
-manually:
+**3 Interface Options** → **I2C** → **Yes**. Or edit
+`/boot/firmware/config.txt` (`/boot/config.txt` on older Raspberry Pi OS
+releases) manually:
 
 ```text
 dtparam=i2c_arm=on
 dtparam=i2c_arm_baudrate=100000   # 100 kHz (default 100 kHz)
+```
+
+Install the scan tool and allow your user to open the bus (log out and in
+again afterwards), then check that the module answers:
+
+```sh
+sudo apt install i2c-tools
+sudo usermod -aG i2c $USER
+i2cdetect -y 1        # should show 0x50
 ```
 
 Usage from Python:
@@ -360,9 +377,7 @@ x86 dongles require a **thin wrapper class** that implements the
 duck-typed backend interface (`read_byte` / `write_byte` /
 `register_acks` / `now_ms` — see
 [09 · API Reference](09_api_reference.md), section "Bus autodetect").
-Sample wrapper code for various dongles is planned for release in the
-`rbamp.adapters.*` submodule in v1.3+ — until then, write your own
-wrapper modeled on `_io_smbus.py` / `_io_micropython.py`.
+For other dongles, write your own wrapper modeled on `_io_smbus.py` / `_io_micropython.py`.
 
 ## MicroPython hosts
 
@@ -423,7 +438,7 @@ boards.
 ## MicroPython baseline NACK pattern on ESP32 — 50 kHz
 
 When running under MicroPython on **ESP32**, the current rbAmp firmware
-exhibits a **~20 % NACK rate at 100 kHz** and **< 5 % at 50 kHz**. This
+exhibits **frequent NACKs at 100 kHz**, far fewer at 50 kHz. This
 is specific to the ESP-IDF I²C stack that underlies MicroPython ESP32.
 On the other MicroPython ports (RP2040 / STM32 / Pyboard) the problem
 does not appear.
@@ -452,7 +467,7 @@ observability.
 ## DATA_READY (DRDY)
 
 An optional pin for polling optimization. If the application polls the
-module no more than once every 200 ms, `DRDY` can be left
+module no more than once every 100 ms, `DRDY` can be left
 unconnected.
 
 ### Electrical parameters
@@ -463,7 +478,7 @@ unconnected.
   recommended)
 - **Ready pulse**: LOW for ~10 µs after the RT registers have been
   updated with fresh data
-- **Pulse rate**: ~5 Hz (one pulse per ~200 ms RT window)
+- **Pulse rate**: ~10 Hz (one pulse per ~100 ms RT window)
 
 ### Semantics
 
@@ -524,8 +539,27 @@ while True:
         print("read failed:", e)
 ```
 
-`DRDY` is **optional** — polling at any rate ≤ 5 Hz works without it
+`DRDY` is **optional** — polling at any rate ≤ 10 Hz works without it
 too. The package does not depend on `DRDY` in any of its paths.
+
+## STANDARD (STD) modules
+
+STD modules use the **same I²C wiring, pull-up considerations, address
+(default `0x50`) and bus parameters** as described in this chapter, and the
+same `RbAmp(bus, addr)` constructor. The library detects the module line in
+`begin()`; no extra wiring or configuration is needed.
+
+- STD-only calls (on-device energy, voltage angles, starting current, ...)
+  raise `RbAmpNotSupportedError` on a BASIC module.
+- Some STD features need a recent enough module image; on an older image
+  the call raises `RbAmpNotSupportedError` ("not available").
+- On-device energy, angle and starting-current features are validated on
+  CPython (`smbus2`). The MicroPython 16-bit path is implemented but is
+  not yet hardware-validated — prefer a CPython host (Raspberry Pi and
+  other Linux SBCs, above) for these features until a release note says
+  otherwise.
+
+See [09 · API Reference](09_api_reference.md#std-module-line-160).
 
 ## Links
 

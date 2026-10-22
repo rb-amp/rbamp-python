@@ -1,31 +1,34 @@
-# 02 · Module Tiers
+# 02 · Module Lines
 
-![rbAmp product tiers: BASIC / STANDARD / PRO capability ladder](images/tier-ladder.png)
+![rbAmp module lines: BASIC / STANDARD / PRO capability ladder](images/tier-ladder.png)
 
-## What a Tier Is
+## What a Module Line Is
 
-**rbAmp** ships in three tiers: **BASIC**, **STANDARD**, **PRO**.
-A tier is a complete bundle of a **hardware revision and firmware**, not a
-software flag. Moving between tiers requires a physical SKU change,
+**rbAmp** modules come in module lines: **BASIC**, **STANDARD (STD)** and
+**PRO** (not implemented). A module line is a complete bundle of a
+**hardware revision and firmware**, not a software flag. Moving between
+module lines requires a physical SKU change,
 not a firmware update.
 
-From the package and user-code perspective: **the `RbAmp` class API is
-identical across all tiers**. The differences show up in which
-values the module returns and in how the firmware behavior interprets the data
-(export to the grid in particular).
+From the package and user-code perspective: **one `RbAmp` class serves
+every module line**, and the common readers (`voltage`, `current`, `power`,
+`power_factor`, `frequency`) work on all of them. The module line is detected
+automatically at `begin()`. STANDARD (STD) modules additionally expose the
+STD-only calls (on-device energy and so on, see below); calling one of those
+on a BASIC module raises `RbAmpNotSupportedError`.
 
 ## Current State
 
 BASIC and STANDARD modules are supported by this library (STANDARD from 1.6.0).
 PRO is not implemented.
 
-| Tier | Shipping |
+| Module line | Shipping |
 |---|---|
 | **BASIC** | ✅ yes |
-| **STANDARD** | ❌ planned |
-| **PRO** | ❌ planned |
+| **STANDARD** (STD) | ✅ yes (supported by this library from 1.6.0) |
+| **PRO** | ❌ not implemented |
 
-## BASIC — Entry-Level Consumption-Metering Tier
+## BASIC — Entry-Level Consumption-Metering Module Line
 
 ### Hardware
 
@@ -42,8 +45,8 @@ The three "layers" of active-power values behave differently:
 
 | Signal | Meaning | Behavior on BASIC |
 |---|---|---|
-| `dev.power[ch]` / `dev.read_power(ch)` | instantaneous RT power, ~200 ms update | **signed** — a negative value is visible in real time (export) |
-| `snap.avg_p[ch]` (from `dev.read_period_snapshot()`) | average power over the period | each 200 ms average-P window is **clamped** to `max(P, 0)` before being added to the period accumulator |
+| `dev.power[ch]` / `dev.read_power(ch)` | instantaneous RT power, ~100 ms update | **signed** — a negative value is visible in real time (export) |
+| `snap.avg_p[ch]` (from `dev.read_period_snapshot()`) | average power over the period | each 100 ms average-P window is **clamped** to `max(P, 0)` before being added to the period accumulator |
 | `dev.energy.wh(ch)` | accumulated Wh by the package | **monotonic** — consumption only; export is not counted |
 
 In other words: the user **sees** export in the RT reading, but it is
@@ -74,10 +77,10 @@ def bidirectional_loop(dev):
     t_prev = time.monotonic()
 
     while True:
-        # Sample RT power at 5 Hz — matches the firmware-commit
-        # cadence (200 ms per channel). Faster yields empty repeated
+        # Sample RT power at 10 Hz — matches the firmware-commit
+        # cadence (100 ms per channel). Faster yields empty repeated
         # reads; slower loses resolution on sharp load transitions.
-        time.sleep(0.2)
+        time.sleep(0.1)
 
         t_now = time.monotonic()
         dt_s  = t_now - t_prev
@@ -97,7 +100,7 @@ def bidirectional_loop(dev):
 
 On MicroPython, replace `time.monotonic()` with `time.ticks_ms()` /
 `time.ticks_diff()` (more accurate and cheap on RAM on embedded
-platforms) and `time.sleep(0.2)` with `time.sleep_ms(200)`. On
+platforms) and `time.sleep(0.1)` with `time.sleep_ms(100)`. On
 CPython, no changes.
 
 A complete working example of the pattern is in [06_examples.md](06_examples.md),
@@ -105,56 +108,53 @@ the "Master-side bidirectional metering" scenario, as well as the
 source files [`examples_upy/07_bidirectional_energy.py`](https://github.com/rb-amp/rbamp-python)
 and [`examples_cpython/05_bidirectional_energy.py`](https://github.com/rb-amp/rbamp-python).
 
-## STANDARD — Bidirectional Tier *(planned)*
+## STANDARD (STD) — Shipping Module Line
 
-> This section describes **planned** functionality. It is not
-> implemented in the current rbAmp firmware.
+STANDARD modules are a shipping module line that this library supports from
+version 1.6.0. They use a different (16-bit) register map from BASIC; the
+library hides the difference — the same `RbAmp` class, the same I²C wiring
+and address, and the same common readers.
 
-### What Will Be Added
+What the library adds on an STD module:
 
-- **Hardware**: an extended analog stack for accurate
-  measurement of both consumption and reverse flow
-- **Firmware**: bidirectional accounting — two separate per-period
-  accumulators (consumption and export), with separate exposure through
-  additional registers (details after the STANDARD tier is released)
-- **Package API**: `dev.energy.wh(ch)` will begin returning a signed
-  net value (consumption − export) automatically, with no
-  master-side tricks
+- **On-device energy**: `dev.read_std_energy()` returns the module's own
+  life-time counters — active import / export / net and reactive energy, at
+  Wh, mWh and µWh resolution, with per-channel figures.
+  `RbAmp.std_energy_delta(prev, now)` gives the energy used between two
+  readings and is safe across a power cut. You do not integrate power on
+  the master for these counters.
+- **Multi-phase helpers**: `dev.read_voltage_angle(phase)`,
+  `dev.read_phase_sequence()`, `dev.read_reactive(ch)` (STD only; on BASIC, reactive power is not exposed by this library),
+  `dev.read_apparent(ch)`.
+- **Starting current**: `dev.get_start_current()` /
+  `dev.set_start_current(µA)` + `dev.save_config()`.
+- **Full blocks**: `dev.read_std_voltage()`, `read_std_channel()`,
+  `read_std_totals()`, `read_std_config()`, `read_std_health()`,
+  `dev.set_time()`.
 
-### Typical Applications (Once Released)
+Notes:
 
-- Homes with rooftop solar generation
-- Homes with wind turbines
-- Storage systems (batteries)
-- Regenerative loads
-- V2G (vehicle-to-grid) electric-vehicle charging
+- Some STD calls need a recent enough module image (micro-unit energy
+  counters, voltage angles, starting current). If the module does not
+  provide one, the call raises `RbAmpNotSupportedError` ("not available").
+- Use `dev.is_std` to branch in application code.
+- The BASIC period-snapshot API and the master-side `dev.energy`
+  accumulator are for BASIC modules only; on an STD module use
+  `read_std_energy()`.
+- On-device energy, angle and starting-current features are validated on
+  **CPython (`smbus2`)**. The MicroPython 16-bit path is implemented but is
+  **not yet hardware-validated** — prefer CPython for these features until a
+  release note says otherwise.
 
-## PRO — Premium Tier *(planned)*
+Full signatures: [09 · API Reference](09_api_reference.md#std-module-line-160).
 
-> This section describes **planned** functionality. It is not
-> implemented in the current rbAmp firmware.
+## PRO — Not Implemented
 
-### What PRO Will Add
+PRO is not implemented in this library. There is no PRO-specific API.
 
-- **Hardware**: a PRO-grade analog front-end (lower
-  noise, tighter linearity), premium factory calibration,
-  optional extended channel sets
-- **Firmware**: bidirectional metering (as in STANDARD) plus
-  additional diagnostic features — details after the PRO tier
-  is released
-- **Package API**: extended diagnostic accessors
-  (exact set after the firmware implementation)
+## How to Detect the Module Line at Runtime
 
-### PRO Applications (Once Released)
-
-- Submetering of commercial tenants
-- Billing-grade accuracy installations
-- Test-and-measurement laboratories
-- Energy-intensive industrial loads
-
-## How to Detect the Tier at Runtime
-
-In the current firmware there is no explicit "tier" register. Indirect
+In the current firmware there is no explicit "module line" register. Indirect
 indicators are available through handle properties:
 
 ```python
@@ -164,35 +164,36 @@ fw = dev.firmware_version
 # Presence of a voltage sensor (UI* variants vs I*-only)
 voltage_hw = dev.has_voltage_hw
 
-# Number of current channels (1 / 2 / 3)
+# Number of current channels (1 / 2 / 3 on BASIC; 5 / 7 on UI5 / UI7)
 channels = dev.channels
 
-# Full SKU — variant byte from REG_HW_VARIANT (0x55)
-# 1=UI1, 2=UI2, 3=UI3, 4=I1, 5=I2, 6=I3
-variant = dev.hw_variant
+# BASIC variant byte (1=UI1, 2=UI2, 3=UI3, 4=I1, 5=I2, 6=I3, 7=UI5, 8=UI7)
+variant = dev.read_variant()
+
+# Module line: True on an STD module (detected in begin())
+is_std = dev.is_std
 ```
 
-> **Note**: the indirect indicators above give different signals (the
-> firmware version, channel count, presence of a voltage sensor, SKU), but
-> they do **NOT** give the tier — the current firmware is implicitly always
-> **BASIC**. Use the SKU label on the module enclosure as the source of truth
-> for the tier. An explicit tier register will appear once STANDARD starts
-> shipping.
+> **Note**: `dev.is_std` tells you the module line (STD vs BASIC). The other
+> indicators (firmware version, channel count, presence of a voltage sensor,
+> variant) describe the module but do not identify the module line. `dev.read_variant()` is
+> the BASIC variant byte; use the SKU label on the module enclosure as the
+> source of truth for the product.
 
-## Where Tier-Dependent Places Are Marked in the Documentation
+## Where Module-Line-Dependent Places Are Marked in the Documentation
 
-In the package text and canonical documentation, tier-dependent
+In the package text and canonical documentation, module-line-dependent
 features are marked explicitly, for example:
 
-> **STANDARD / PRO only** — this register is not available on a BASIC module.
+> **STD only** — this call is not available on a BASIC module.
 
 Or, conversely, BASIC-specific behavior:
 
 > **BASIC**: the `dev.energy.wh(ch)` counter is monotonic — export to the grid
 > is not counted. For bidirectional metering, see the
 > "Master-side bidirectional metering" scenario in
-> [06_examples.md](06_examples.md), or use a STANDARD/PRO
-> module.
+> [06_examples.md](06_examples.md), or use the on-device energy of a
+> STANDARD module (`dev.read_std_energy()`).
 
 ## What's Next
 

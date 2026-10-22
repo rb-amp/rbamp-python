@@ -1,6 +1,6 @@
 # Examples
 
-This chapter walks through 10 working scenarios — from a minimal
+This chapter walks through 11 scenarios (10 in the table below plus Scenario 11) — from a minimal
 "hello world" to a production deployment. Most scenarios have
 parallel implementations in **MicroPython** (under
 [`examples_upy/`](https://github.com/rb-amp/rbamp-python/tree/main/rbamp/examples_upy)) and **CPython** (under
@@ -16,10 +16,10 @@ versions live in the corresponding example files.
 | 4 | UI3 + MQTT per channel | [`04_mqtt.py`](https://github.com/rb-amp/rbamp-python/blob/main/rbamp/examples_upy/04_mqtt.py) | [`04_mqtt_publisher.py`](https://github.com/rb-amp/rbamp-python/blob/main/rbamp/examples_cpython/04_mqtt_publisher.py) |
 | 5 | Master-side bidirectional metering | [`07_bidirectional_energy.py`](https://github.com/rb-amp/rbamp-python/blob/main/rbamp/examples_upy/07_bidirectional_energy.py) | [`05_bidirectional_energy.py`](https://github.com/rb-amp/rbamp-python/blob/main/rbamp/examples_cpython/05_bidirectional_energy.py) |
 | 6 | Whole-home energy balance (multi-module + MQTT) | [`08_home_energy_balance.py`](https://github.com/rb-amp/rbamp-python/blob/main/rbamp/examples_upy/08_home_energy_balance.py) | [`07_home_energy_balance.py`](https://github.com/rb-amp/rbamp-python/blob/main/rbamp/examples_cpython/07_home_energy_balance.py) |
-| 7 | Event detection logging (EMA) | [`09_event_detection_logger.py`](https://github.com/rb-amp/rbamp-python/blob/main/rbamp/examples_upy/09_event_detection_logger.py) | (composition) |
-| 8 | Local rotating logger | (`with open(...)` flash-based) | [`08_rotating_file_logger.py`](https://github.com/rb-amp/rbamp-python/blob/main/rbamp/examples_cpython/08_rotating_file_logger.py) |
+| 7 | Event detection logging (EMA) | [`09_event_detection_logger.py`](https://github.com/rb-amp/rbamp-python/blob/main/rbamp/examples_upy/09_event_detection_logger.py) | no file |
+| 8 | Local rotating logger | no file | [`08_rotating_file_logger.py`](https://github.com/rb-amp/rbamp-python/blob/main/rbamp/examples_cpython/08_rotating_file_logger.py) |
 | 9 | Battery-powered deep-sleep logger | [`06_deep_sleep.py`](https://github.com/rb-amp/rbamp-python/blob/main/rbamp/examples_upy/06_deep_sleep.py) | (not applicable) |
-| 10 | Async streaming via `stream_period` | [`05_async_streaming.py`](https://github.com/rb-amp/rbamp-python/blob/main/rbamp/examples_upy/05_async_streaming.py) | (asyncio equivalent) |
+| 10 | Async streaming via `stream_period` | [`05_async_streaming.py`](https://github.com/rb-amp/rbamp-python/blob/main/rbamp/examples_upy/05_async_streaming.py) | no file (code in Scenario 10) |
 
 > All scenarios assume that the sensor class and CT model are
 > already configured via `dev.set_sensor_class()` + `dev.set_ct_model()`
@@ -160,9 +160,9 @@ with SMBus(1) as bus, RbAmp(bus, 0x50) as dev:
 
 **Handling stale snapshots.** `dev.read_period_snapshot()` raises
 `RbAmpStaleError` if the module hasn't managed to prepare a new
-snapshot by read time. The package **records the master timestamp
-anyway** internally — the next successful snapshot won't be
-double-counted over the interval. A standard Python try/except
+snapshot by read time. The package **keeps the previous timestamp**, so
+the next successful snapshot covers the full interval and Wh stays
+exact. A standard Python try/except
 pattern.
 
 ---
@@ -173,7 +173,7 @@ pattern.
 **coherently** so their per-channel powers sum on the *same* mains
 period.
 
-> **v1.3 coherent latch (`CAP_GC_LATCH`):** one General-Call frame
+> **Coherent latch:** one General-Call frame
 > (`A5 27 <group> <tick_lo> <tick_hi>`) latches every module that opted
 > in with `fleet.enable_gc_all()` — fleet skew < 10 µs, so the totals add
 > up. `fleet.gc_latch()` sends the frame and returns the broadcast `tick`;
@@ -275,7 +275,7 @@ Per-channel Wh counters, published to MQTT once per minute. Shows
 that `dev.energy.wh(ch)` works on each channel independently — no
 need for a manual `total_wh[3]` array on the master side.
 
-### CPython (via `paho-mqtt`)
+### CPython (via `paho-mqtt`; install with `pip install paho-mqtt`)
 
 ```python
 import time, json
@@ -285,7 +285,7 @@ from rbamp import RbAmp, RbAmpStaleError, RbAmpSensorClass
 
 CH_NAMES = ["main", "heatpump", "lights"]
 
-mqtt = mqtt_client.Client("rbamp-ui3")
+mqtt = mqtt_client.Client(mqtt_client.CallbackAPIVersion.VERSION2, "rbamp-ui3")
 mqtt.connect("192.168.1.10", 1883, keepalive=60)
 mqtt.loop_start()
 
@@ -350,10 +350,10 @@ For full HA auto-discovery on top of this pattern, see
 ## Scenario 5 — Master-side bidirectional metering
 
 **Goal:** split signed instantaneous power into gross-consume and
-gross-export. Use this pattern on the BASIC tier, where the
+gross-export. Use this pattern on the BASIC module line, where the
 **firmware** clips negative values in `snap.avg_p[ch]`
 (period-averaged power) — sample `dev.read_power(0)` (instantaneous
-power, **signed on all tiers**) at 5 Hz on the master side and bucket
+power, **signed on all module lines**) at 10 Hz on the master side and bucket
 the values yourself.
 
 ### CPython version
@@ -367,9 +367,10 @@ with SMBus(1) as bus, RbAmp(bus, 0x50) as dev:
     consume_wh = 0.0
     export_wh  = 0.0
     t_prev = time.monotonic()
+    last_print = t_prev
 
     while True:
-        time.sleep(0.2)   # 5 Hz, matches the RT cadence
+        time.sleep(0.1)   # 10 Hz, matches the RT cadence
 
         t_now = time.monotonic()
         dt_s  = t_now - t_prev
@@ -387,7 +388,8 @@ with SMBus(1) as bus, RbAmp(bus, 0x50) as dev:
             export_wh  += -dwh
 
         # Print once per second
-        if int(t_now) % 5 == 0:
+        if t_now - last_print >= 1.0:
+            last_print = t_now
             print(f"P={p:.1f} W   "
                   f"cons={consume_wh:.4f} Wh  exp={export_wh:.4f} Wh  "
                   f"net={consume_wh - export_wh:.4f} Wh")
@@ -407,7 +409,7 @@ with RbAmp(i2c, 0x50) as dev:
     t_prev = time.ticks_ms()
 
     while True:
-        time.sleep_ms(200)
+        time.sleep_ms(100)
 
         t_now = time.ticks_ms()
         dt_s  = time.ticks_diff(t_now, t_prev) / 1000
@@ -425,10 +427,9 @@ with RbAmp(i2c, 0x50) as dev:
             export_wh  += -dwh
 ```
 
-On future STANDARD / PRO firmware tiers (planned for v1.3+), the
-period accumulator `dev.energy.wh(0)` will already return a signed
-net balance — this master-side split is only needed for separate
-gross-consume / gross-export reporting.
+On a STANDARD (STD) module use `read_std_energy()`; this master-side
+split is only needed on BASIC modules for separate gross-consume /
+gross-export reporting.
 
 ---
 
@@ -437,6 +438,8 @@ gross-consume / gross-export reporting.
 **Goal:** 3 modules — mains (bidirectional), solar (generation
 only), loads (UI3 for per-appliance). A combined dashboard is
 published once per minute.
+
+(Needs `pip install paho-mqtt`.)
 
 ```python
 import time, json
@@ -460,7 +463,7 @@ with SMBus(1) as bus:
         fleet.add(d)
     fleet.enable_gc_all(group=GC_GROUP)   # one-time, persisted
 
-    mqtt = mqtt_client.Client("home-balance")
+    mqtt = mqtt_client.Client(mqtt_client.CallbackAPIVersion.VERSION2, "home-balance")
     mqtt.connect("192.168.1.10", 1883, keepalive=60)
     mqtt.loop_start()
 
@@ -495,8 +498,9 @@ with SMBus(1) as bus:
                      f"{in_sync}/{len(sync)}", qos=1, retain=True)
 ```
 
-For an explicit gross-consume / gross-export split on mains, combine
-this with the Scenario 5 pattern (a separate 5 Hz loop on
+On BASIC modules export is not counted by `energy.wh()`, so the `solar`
+and `mains` figures above are consumption only. For an explicit gross-consume / gross-export split on mains, combine
+this with the Scenario 5 pattern (a separate 10 Hz loop on
 `mains.read_power(0)` in a background threading.Thread on CPython, or
 `uasyncio.create_task` on MicroPython).
 
@@ -504,7 +508,7 @@ this with the Scenario 5 pattern (a separate 5 Hz loop on
 
 ## Scenario 7 — Event detection logging (EMA)
 
-**Goal:** on every 200 ms RT window, compare instantaneous power
+**Goal:** on every 100 ms RT window, compare instantaneous power
 with an exponential moving average. Log significant deviations —
 loads like a microwave, kettle, or hairdryer "appear" in the log as
 turn-on / turn-off events.
@@ -524,7 +528,7 @@ with SMBus(1) as bus, RbAmp(bus, 0x50) as dev:
         p_ema = 0.0
 
     while True:
-        time.sleep(0.2)
+        time.sleep(0.1)
         try:
             p = dev.read_power(0)
         except RbAmpIOError:
@@ -747,6 +751,49 @@ Full examples — [`examples_upy/05_async_streaming.py`](https://github.com/rb-a
 
 ---
 
+## Scenario 11 — STD on-device energy (CPython)
+
+**Goal:** on a STANDARD (STD) module, read the module's own life-time
+energy counters and report what was used in each interval. There is no
+separate example file for this scenario; the code below is complete.
+
+> On-device energy is validated on CPython (`smbus2`). The MicroPython
+> 16-bit path is implemented but not yet hardware-validated — prefer
+> CPython for this scenario.
+
+```python
+import time
+from smbus2 import SMBus
+from rbamp import RbAmp, RbAmpNotSupportedError
+
+with SMBus(1) as bus, RbAmp(bus, 0x50) as dev:
+    if not dev.is_std:
+        raise SystemExit("not an STD module")
+
+    try:
+        prev = dev.read_std_energy()
+    except RbAmpNotSupportedError:
+        raise SystemExit("this module does not provide on-device energy")
+
+    while True:
+        time.sleep(60)
+        now = dev.read_std_energy()
+        delta, restarted = RbAmp.std_energy_delta(prev, now)
+        if delta is None:
+            print("energy generation changed - readings not comparable")
+        else:
+            print("import %d Wh, export %d Wh, net %d Wh%s" % (
+                delta.act_import_wh, delta.act_export_wh, delta.act_net_wh,
+                " (module restarted)" if restarted else ""))
+        prev = now
+```
+
+`std_energy_delta()` is safe across a power cut: a counter that comes back
+slightly lower is treated as zero increase. Per-channel figures are in
+`now.ch_import_uwh[ch]` / `ch_export_uwh[ch]` for `ch < now.channels`.
+
+---
+
 ## Scenario summary table
 
 | # | LOC | Runtime | I²C bus | Period? | DRDY? | MQTT? | Persistence |
@@ -761,6 +808,7 @@ Full examples — [`examples_upy/05_async_streaming.py`](https://github.com/rb-a
 | 8 | ~30 | CPython | dedicated | yes | no | no | rotating-log file |
 | 9 | ~50 | MicroPython only | dedicated | yes | no | yes | RTC memory + MQTT |
 | 10 | ~25 | both (asyncio/uasyncio) | dedicated | yes | no | (optional) | RAM |
+| 11 | ~20 | CPython (STD module) | dedicated | no (on-device) | no | no | module life-time counters |
 
 ## Production deployment (CPython only)
 
@@ -773,7 +821,8 @@ service** is recommended. The full example is in
 Basic structure:
 
 ```python
-# /usr/local/bin/rbamp_daemon.py
+#!/usr/bin/env python3
+# /usr/local/bin/rbamp_daemon.py  (make it executable: sudo chmod +x /usr/local/bin/rbamp_daemon.py)
 import sys, signal, time, logging
 from smbus2 import SMBus
 from rbamp import RbAmp, RbAmpSensorClass
@@ -817,6 +866,7 @@ Type=simple
 ExecStart=/usr/local/bin/rbamp_daemon.py
 Restart=on-failure
 RestartSec=5
+# the user must be in the i2c group: sudo usermod -aG i2c pi
 User=pi
 
 [Install]

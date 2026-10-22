@@ -32,16 +32,27 @@ mpremote cp -r rbamp/ :rbamp/
 
 ## Quick start
 
+Mains voltage can kill. Disconnect and lock out the circuit before
+connecting the L/N terminals or fitting the clamp; have a qualified person
+do mains wiring. Clamp **one** conductor only (L). On an STD module (check
+`dev.is_std`) skip the sensor setup and period/Wh path and use
+`read_std_energy()`. The Wh counter is kept in memory and restarts from 0
+after a script restart.
+
 CPython (Raspberry Pi):
 
 ```python
+import time
 from smbus2 import SMBus
-from rbamp import RbAmp
+from rbamp import RbAmp, RbAmpSensorClass
 
 with SMBus(1) as bus:
     with RbAmp(bus, 0x50) as dev:
+        dev.set_sensor_class(RbAmpSensorClass.SCT_013)   # once per installation
+        dev.set_ct_model(3)                              # 3 = SCT-013-030
         print(dev.voltage, "V")
         print(dev.power[0], "W")
+        time.sleep(60)                                   # wait one full period
         snap = dev.read_period_snapshot()
         print(dev.energy.wh(0), "Wh")
 ```
@@ -49,12 +60,16 @@ with SMBus(1) as bus:
 MicroPython (ESP32, 50 kHz per platform guidance):
 
 ```python
+import time
 from machine import I2C, Pin
-from rbamp import RbAmp
+from rbamp import RbAmp, RbAmpSensorClass
 
 i2c = I2C(0, scl=Pin(22), sda=Pin(21), freq=50_000)
 with RbAmp(i2c, 0x50) as dev:
+    dev.set_sensor_class(RbAmpSensorClass.SCT_013)   # once per installation
+    dev.set_ct_model(3)                              # 3 = SCT-013-030
     print(dev.voltage, "V")
+    time.sleep(60)                                   # wait one full period
     snap = dev.read_period_snapshot()
     print(dev.energy.wh(0), "Wh")
 ```

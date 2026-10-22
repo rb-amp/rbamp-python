@@ -31,6 +31,8 @@ in HA are required.
 
 ### CPython version (via `paho-mqtt`)
 
+Install the client first: `pip install paho-mqtt`.
+
 ```python
 import time, json
 from smbus2 import SMBus
@@ -40,7 +42,7 @@ from rbamp import RbAmp, RbAmpSensorClass, RbAmpStaleError
 DEVICE_ID   = "rbamp_main"
 DEVICE_NAME = "Mains rbAmp"
 
-mqtt = mqtt_client.Client(DEVICE_ID)
+mqtt = mqtt_client.Client(mqtt_client.CallbackAPIVersion.VERSION2, DEVICE_ID)
 mqtt.connect("192.168.1.10", 1883, keepalive=60)
 mqtt.loop_start()
 
@@ -162,6 +164,14 @@ with RbAmp(i2c, 0x50) as dev:
                      ujson.dumps(state).encode(), qos=0)
         mqtt.ping()   # keepalive, since umqtt.simple is sync with no background task
 ```
+
+> **About the Energy value.** `dev.energy.wh(0)` is kept in memory: it
+> restarts from 0 after a script restart or reboot, and HA copes with this
+> because the sensor is `total_increasing`. To keep an absolute total
+> yourself, persist `dev.energy.wh(0)` and add it back on start. On BASIC
+> modules export is not counted. On an STD module use `read_std_energy()`
+> instead of the master-side counter. The first values appear after the
+> first 60-second period.
 
 ### Result in HA
 
@@ -304,7 +314,7 @@ def publish_to_domoticz(idx, power, e_wh):
         print("domoticz request failed:", e)
 
 # In your 60-second loop:
-publish_to_domoticz(123 /* your idx */, snap.avg_p[0], dev.energy.wh(0))
+publish_to_domoticz(123, snap.avg_p[0], dev.energy.wh(0))   # 123 = your idx
 ```
 
 ### MicroPython
@@ -409,7 +419,8 @@ For a long-running soak deployment, additionally push diagnostic
 counters to a separate measurement:
 
 ```python
-# On MicroPython, with an explicit backend:
+# On MicroPython, build the backend yourself and pass it to RbAmp:
+#   backend = MachineI2CBackend(i2c, retry_attempts=5); dev = RbAmp(backend, 0x50)
 diag_body = (
     "rbamp_diag,device=main "
     f"sanity_reject={dev.sanity_reject_count},"
@@ -435,7 +446,7 @@ the broker fans out to subscribers itself. Don't push from Python to
 N HTTP endpoints directly: that couples the host to specific
 consumers.
 
-For a very high-rate stream (5 Hz RT via `dev.power[0]`), run a
+For a very high-rate stream (10 Hz RT via `dev.power[0]`), run a
 sidecar Python script on the Pi that hosts the broker — subscribe to
 the fast topic, decimate, and republish to the slow topics. The main
 Python host (the one running `rbamp`) should stay focused on
