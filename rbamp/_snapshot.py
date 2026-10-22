@@ -14,8 +14,8 @@ See ``libs/spec/SPEC.md`` for the protocol definitions these classes mirror.
 TOPOLOGY_SINGLE      = 1  # UI1 / I1 — 1 current channel
 TOPOLOGY_SPLIT_PHASE = 2  # UI2 / I2 — 2 current channels
 TOPOLOGY_THREE_PHASE = 3  # UI3 / I3 — 3 current channels
-TOPOLOGY_FIVE_CH     = 5  # UI5 — 5 current channels + voltage (F040 senior SKU)
-TOPOLOGY_SEVEN_CH    = 7  # UI7 — 7 current channels + voltage (F040 senior SKU)
+TOPOLOGY_FIVE_CH     = 5  # UI5 — 5 current channels + voltage (senior SKU)
+TOPOLOGY_SEVEN_CH    = 7  # UI7 — 7 current channels + voltage (senior SKU)
 
 # Legacy value 4 (=I3 without voltage) still valid in _SKU_MAP; it uses
 # TOPOLOGY_THREE_PHASE semantically. Constants above are the exposed set.
@@ -90,7 +90,7 @@ except ImportError:
 # RbAmpWindowField — v1.4 senior-SKU channel-access-window field codes
 # ---------------------------------------------------------------------------
 #
-# Senior SKUs (UI5/UI7, F040) expose channels 3..N-1 only through a
+# Senior SKUs (UI5/UI7) expose channels 3..N-1 only through a
 # selector/window pair: write ``(field << 4) | ch`` to REG_CHANNEL_SELECT
 # (0x32); read four single-byte registers 0x3C..0x3F as float32 LE.
 #
@@ -202,15 +202,18 @@ class RbAmpPeriodSnapshot:
 
     Attributes:
         avg_p (list[float]): Average real power per channel over the
-            latched period (W). Three-element list; unused channels are 0.
+            latched period (W). Sized ``max(3, channels)`` — a junior SKU
+            keeps the three-element shape (legacy ``avg_p[2]`` stays valid);
+            senior SKUs (UI5/UI7) carry ch3+ too. Unused channels are 0.
         max_p (float):       Peak real power on channel 0 during the period (W).
         latch_ms (int):      Device-reported period duration (ms, diagnostic).
         master_dt_ms (int):  Master's wall-clock dt since previous successful latch.
         valid (bool):        True if the period-valid status bit (0x07 bit0) was set at read time.
     """
 
-    def __init__(self):
-        self.avg_p = [0.0, 0.0, 0.0]
+    def __init__(self, channels=1):
+        n = channels if channels > 3 else 3
+        self.avg_p = [0.0] * n
         self.max_p = 0.0
         self.latch_ms = 0
         self.master_dt_ms = 0
@@ -277,3 +280,11 @@ class RbAmpModeError(RbAmpError):
 
 class RbAmpVersionError(RbAmpError):
     """Device firmware version is not supported by this library."""
+
+
+class RbAmpNotSupportedError(RbAmpError):
+    """The call is not available on this device/firmware.
+
+    Raised by STD-line methods when invoked on a BASIC (8-bit) module, and by
+    STD methods gated on a capability or firmware version the module lacks
+    (e.g. on-device energy, µWh counters, voltage angles, CFG_START_UA)."""

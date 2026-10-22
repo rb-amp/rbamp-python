@@ -128,7 +128,7 @@ def test_register_acks_remains_single_shot():
     """register_acks() MUST NOT retry — it's a NACK probe.
 
     Retry would mask the very NACK signal the probe is testing for, per
-    the comment in baton task brief.
+    the comment in the task brief.
     """
     bus = _FlakyI2C(fail_count=99)
     be = MachineI2CBackend(bus, retry_attempts=3, retry_gap_ms=0)
@@ -363,9 +363,8 @@ def test_rbamp_reset_counters_resets_real_backend_too():
 
 
 # ---------------------------------------------------------------------------
-# retry_count_total — bumped on every silent recovery (Phase 2 follow-up
-# per root baton 2026-05-25T00:30Z Q2 — used by the soak engine to compute
-# retry_rate and scheduler-jitter-excluding-retries).
+# retry_count_total — bumped on every silent recovery, used by the
+# soak engine to compute retry_rate and scheduler-jitter-excluding-retries.
 # ---------------------------------------------------------------------------
 
 def test_retry_count_total_starts_at_zero():

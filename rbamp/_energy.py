@@ -39,9 +39,19 @@ class RbAmpEnergy:
     """
 
     def __init__(self):
-        """Construct an empty accumulator. Enabled by default."""
+        """Construct an empty accumulator. Enabled by default.
+
+        The per-channel list starts at 3 (junior-SKU default) and grows on
+        demand when a wider module (UI5/UI7) first integrates — see
+        :meth:`tick`.
+        """
         self._wh = [0.0, 0.0, 0.0]
         self._enabled = True
+
+    def _ensure(self, n):
+        """Grow the per-channel list to hold at least ``n`` channels."""
+        if n > len(self._wh):
+            self._wh.extend([0.0] * (n - len(self._wh)))
 
     def tick(self, snap, channels):
         """Integrate a period snapshot into the running totals.
@@ -52,7 +62,7 @@ class RbAmpEnergy:
 
         Args:
             snap (RbAmpPeriodSnapshot): Snapshot to integrate.
-            channels (int): Number of valid channels (1..3).
+            channels (int): Number of valid channels (1..7; senior SKUs 5/7).
         """
         if not self._enabled or not snap.valid:
             return
@@ -60,7 +70,12 @@ class RbAmpEnergy:
         if dt_s <= 0.0:
             # First tick after primer LATCH on begin().
             return
-        n = channels if channels <= 3 else 3
+        # Integrate every populated channel. Senior SKUs (UI5/UI7) expose ch3+
+        # period-average power through the channel window (field 13); the
+        # snapshot's avg_p is sized to the channel count, so integrate all of
+        # them, growing the accumulator on first sight of a wider device.
+        n = channels if channels <= len(snap.avg_p) else len(snap.avg_p)
+        self._ensure(n)
         for ch in range(n):
             # E_Wh += avg_p_W * dt_s / 3600 — see SPEC §7.
             self._wh[ch] += snap.avg_p[ch] * dt_s / 3600.0
@@ -69,23 +84,25 @@ class RbAmpEnergy:
         """Read the running total Wh for one channel.
 
         Args:
-            ch (int): Channel index 0..2.
+            ch (int): Channel index 0..N-1 (senior SKUs expose up to ch6).
 
         Returns:
             float: Running total in Wh (signed; negative = net export).
+            0.0 for a channel that has never been integrated.
         """
-        if ch < 0 or ch > 2:
+        if ch < 0 or ch >= len(self._wh):
             return 0.0
         return self._wh[ch]
 
     def reset(self, ch=0):
         """Reset one channel's accumulator to zero."""
-        if 0 <= ch <= 2:
+        if 0 <= ch < len(self._wh):
             self._wh[ch] = 0.0
 
     def reset_all(self):
         """Reset all channels' accumulators to zero."""
-        self._wh[0] = self._wh[1] = self._wh[2] = 0.0
+        for ch in range(len(self._wh)):
+            self._wh[ch] = 0.0
 
     def disable(self):
         """Disable automatic integration.

@@ -5,7 +5,7 @@
 Brought the `rbamp` Python package in line with the rbAmp v1.3 wire
 contract and the cross-platform reference model (Arduino / ESP-IDF /
 ESPHome / STM32 HAL). Bench-validated: **11/11 PASS** on a heterogeneous
-Fix-A fleet (UI1 + I2 + I3) standfw 2026-06-17 + **179/179 mock
+Fix-A fleet (UI1 + I2 + I3) on the bench 2026-06-17 + **179/179 mock
 tests** PASS. **Schema CRC**: `0x5FB3E9F3` (registers_v2).
 
 ### Added

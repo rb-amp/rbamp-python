@@ -18,8 +18,16 @@ from rbamp import (
     RbAmp,
     RbAmpFleet,
     RbAmpIOError,
+    RbAmpModeError,
     RbAmpParamError,
     RbAmpSensorClass,
+)
+from rbamp._rbamp_core import (
+    sensor_class_write_policy,
+    ct_model_write_policy,
+    WRITE_NOOP,
+    WRITE_PAIRED,
+    WRITE_PROCEED,
 )
 from rbamp.tests.conftest import MockBackend
 
@@ -55,19 +63,22 @@ def test_sct013_rejects_reserved_codes(mock_backend, code):
 
 # v1.5.0 canon: client accepts any registry-known non-reserved row (legacy
 # rows are still real presets on the module). WIRED_CT registry contents:
-#   1..5 = legacy (accept)  6..9 = characterized (accept)
-#   10, 11, 13 = reserved (reject client-side, module would ERR_PARAM)
-#   12 = characterized (accept)
-@pytest.mark.parametrize("code", [1, 2, 3, 4, 5, 6, 7, 8, 9, 12])
+#   1..5 = legacy (accept)  6..10, 12 = characterized (accept)
+#   11, 13 = reserved (reject client-side, module would ERR_PARAM)
+# (code 10 = CLAMP2000_30A characterized since 2026-09-04 registry update)
+@pytest.mark.parametrize("code", [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12])
 def test_wired_ct_accepts_registered(mock_backend, code):
     mock_backend._regs[R.REG_VERSION] = 0x04
     mock_backend._regs[R.REG_SENSOR_CLASS] = int(RbAmpSensorClass.WIRED_CT)
     dev = RbAmp(mock_backend, addr=0x50)
     dev.begin()
-    dev.set_ct_model_ch(0, code)  # must not raise
+    # WIRED_CT is factory-paired: the plain setter refuses a model change
+    # (see test_wired_ct_plain_setter_refused); the service path accepts a
+    # valid registry code. This asserts client-side validation PASSES.
+    dev.set_ct_model_ch_force(0, code)  # must not raise
 
 
-@pytest.mark.parametrize("code", [10, 11, 13])
+@pytest.mark.parametrize("code", [11, 13])
 def test_wired_ct_rejects_reserved(mock_backend, code):
     """Reserved rows: allocated in registry, no preset table row -> guaranteed ERR_PARAM."""
     mock_backend._regs[R.REG_VERSION] = 0x04
@@ -449,3 +460,138 @@ def test_commit_address_change_clears_arm_on_failure(mock_backend):
         dev.commit_address_change()
     # Arm cleared by finally so caller can re-prepare safely.
     assert dev._addr_change_armed is False
+
+
+# =====================================================================
+# v1.6.0 — read-before-write guard for sensor class / CT model
+# (parity with the ESP-IDF library). The firmware clears
+# the per-channel CT models on ANY class write and re-applies the generic
+# preset on ANY model write, so a rewrite of the SAME value is destructive;
+# a factory-paired module (class 2/3) must not be silently reconfigured.
+# =====================================================================
+
+# ---- pure policy functions (mirror esp-idf test_std_decode.c) ----
+
+def test_sensor_class_write_policy():
+    # unchanged = no-op (any class, incl. paired)
+    assert sensor_class_write_policy(1, 1) == WRITE_NOOP
+    assert sensor_class_write_policy(2, 2) == WRITE_NOOP
+    assert sensor_class_write_policy(3, 3) == WRITE_NOOP
+    # paired current class → refuse a change
+    assert sensor_class_write_policy(2, 1) == WRITE_PAIRED
+    assert sensor_class_write_policy(3, 1) == WRITE_PAIRED
+    # non-paired current class → proceed
+    assert sensor_class_write_policy(0, 1) == WRITE_PROCEED
+    assert sensor_class_write_policy(1, 2) == WRITE_PROCEED
+    assert sensor_class_write_policy(0, 2) == WRITE_PROCEED
+
+
+def test_ct_model_write_policy():
+    # unchanged model = no-op
+    assert ct_model_write_policy(1, 3, 3, False) == WRITE_NOOP
+    assert ct_model_write_policy(2, 8, 8, False) == WRITE_NOOP
+    # non-paired class, changed model → proceed
+    assert ct_model_write_policy(1, 3, 6, False) == WRITE_PROCEED
+    assert ct_model_write_policy(0, 0, 3, False) == WRITE_PROCEED
+    # paired class, changed model → refuse (incl. unreadable current 0xFF)
+    assert ct_model_write_policy(2, 8, 9, False) == WRITE_PAIRED
+    assert ct_model_write_policy(3, 1, 2, False) == WRITE_PAIRED
+    assert ct_model_write_policy(2, 0xFF, 8, False) == WRITE_PAIRED
+    # non-paired, unreadable current → proceed
+    assert ct_model_write_policy(1, 0xFF, 3, False) == WRITE_PROCEED
+    # force: always proceed (service re-pairing), even same model / paired
+    assert ct_model_write_policy(2, 8, 9, True) == WRITE_PROCEED
+    assert ct_model_write_policy(2, 8, 8, True) == WRITE_PROCEED
+    assert ct_model_write_policy(1, 3, 3, True) == WRITE_PROCEED
+
+
+# ---- read_sensor_class ----
+
+def test_read_sensor_class_returns_pinned(mock_backend):
+    mock_backend._regs[R.REG_SENSOR_CLASS] = int(RbAmpSensorClass.WIRED_CT)
+    dev = RbAmp(mock_backend, addr=0x50); dev.begin()
+    assert dev.read_sensor_class() == int(RbAmpSensorClass.WIRED_CT)
+
+
+# ---- set_sensor_class guard ----
+
+def test_set_sensor_class_unchanged_is_noop(mock_backend):
+    """Same class → no bus write (firmware would clear the CT models)."""
+    mock_backend._regs[R.REG_VERSION] = 0x04
+    mock_backend._regs[R.REG_SENSOR_CLASS] = int(RbAmpSensorClass.SCT_013)
+    dev = RbAmp(mock_backend, addr=0x50); dev.begin()
+    mock_backend.writes.clear()
+    dev.set_sensor_class(RbAmpSensorClass.SCT_013)
+    assert mock_backend.writes == []  # no REG_SENSOR_CLASS, no SAVE
+
+
+def test_set_sensor_class_paired_refused(mock_backend):
+    """Factory-paired class (WIRED_CT) → changing it is refused, no write."""
+    mock_backend._regs[R.REG_VERSION] = 0x04
+    mock_backend._regs[R.REG_SENSOR_CLASS] = int(RbAmpSensorClass.WIRED_CT)
+    dev = RbAmp(mock_backend, addr=0x50); dev.begin()
+    mock_backend.writes.clear()
+    with pytest.raises(RbAmpModeError):
+        dev.set_sensor_class(RbAmpSensorClass.SCT_013)
+    assert mock_backend.writes == []
+
+
+def test_set_sensor_class_from_unset_proceeds(mock_backend):
+    """UNSET → SCT_013 is a normal provisioning write (+ persist)."""
+    mock_backend._regs[R.REG_VERSION] = 0x04
+    mock_backend._regs[R.REG_SENSOR_CLASS] = 0  # UNSET
+    dev = RbAmp(mock_backend, addr=0x50); dev.begin()
+    mock_backend.writes.clear()
+    dev.set_sensor_class(RbAmpSensorClass.SCT_013)
+    regs = [w[1] for w in mock_backend.writes]
+    assert R.REG_SENSOR_CLASS in regs
+    assert any(w[1] == R.REG_COMMAND and w[2] == R.CMD_SAVE_USER_CONFIG
+               for w in mock_backend.writes)
+
+
+# ---- set_ct_model_ch guard ----
+
+def test_ct_model_unchanged_is_noop(mock_backend):
+    """Same model already applied → no bus write (no re-apply / no save)."""
+    mock_backend._regs[R.REG_VERSION] = 0x04
+    mock_backend._regs[R.REG_SENSOR_CLASS] = int(RbAmpSensorClass.SCT_013)
+    mock_backend._channel_models[0] = 3  # SCT013_030 already on ch0
+    dev = RbAmp(mock_backend, addr=0x50); dev.begin()
+    mock_backend.writes.clear()
+    dev.set_ct_model_ch(0, 3)
+    assert mock_backend.writes == []
+
+
+def test_ct_model_plain_setter_refused_on_paired(mock_backend):
+    """WIRED_CT (paired) + different model via the plain setter → refuse."""
+    mock_backend._regs[R.REG_VERSION] = 0x04
+    mock_backend._regs[R.REG_SENSOR_CLASS] = int(RbAmpSensorClass.WIRED_CT)
+    mock_backend._channel_models[0] = 7  # currently CLAMP2000_5A
+    dev = RbAmp(mock_backend, addr=0x50); dev.begin()
+    mock_backend.writes.clear()
+    with pytest.raises(RbAmpModeError):
+        dev.set_ct_model_ch(0, 8)
+    assert mock_backend.writes == []
+    # single-arg form delegates to ch0 and is refused the same way
+    with pytest.raises(RbAmpModeError):
+        dev.set_ct_model(8)
+
+
+def test_ct_model_force_overrides_paired(mock_backend):
+    """Service path writes a different model on a paired module."""
+    mock_backend._regs[R.REG_VERSION] = 0x04
+    mock_backend._regs[R.REG_SENSOR_CLASS] = int(RbAmpSensorClass.WIRED_CT)
+    mock_backend._channel_models[0] = 7
+    dev = RbAmp(mock_backend, addr=0x50); dev.begin()
+    dev.set_ct_model_ch_force(0, 8)
+    assert dev.read_ct_model_ch(0) == 8
+
+
+def test_builtin_ct_force_still_validates(mock_backend):
+    """Force bypasses the paired guard but not client-side registry validation:
+    BUILTIN_CT has no registry rows, so even forced codes reject as unknown."""
+    mock_backend._regs[R.REG_VERSION] = 0x04
+    mock_backend._regs[R.REG_SENSOR_CLASS] = int(RbAmpSensorClass.BUILTIN_CT)
+    dev = RbAmp(mock_backend, addr=0x50); dev.begin()
+    with pytest.raises(RbAmpParamError):
+        dev.set_ct_model_ch_force(0, 3)

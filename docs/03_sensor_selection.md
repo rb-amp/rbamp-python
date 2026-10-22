@@ -196,7 +196,7 @@ If something does not add up, see [10_troubleshooting.md](10_troubleshooting.md)
 |---|---|---|---|
 | **UI1** | 1 | yes | One load with full power computation (P, PF) |
 | **UI2** | 2 | yes | Two independent loads on the **same** phase (service entry + a large consumer) |
-| UI3 | 3 | yes | **Roadmap** — not shipping on the current MCU package (needs 4 ADC channels; described for forward-compat). |
+| **UI3** | 3 | yes | Three independent loads on the same phase |
 | **I1** | 1 | no | Sub-meter without power computation (current only) |
 | **I2** | 2 | no | Two sub-meters, or a dual-CT topology on a single line |
 | **I3** | 3 | no | Three sub-meters, or dual-CT + a third current channel |

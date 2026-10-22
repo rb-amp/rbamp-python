@@ -10,7 +10,7 @@ Regenerate:
 """
 
 
-SENSOR_MODELS_CRC32 = 0x26E5AB57
+SENSOR_MODELS_CRC32 = 0xBC25EF19
 SENSOR_MODELS_VERSION = 1
 
 # ---- Sensor classes (REG_SENSOR_CLASS 0x25) ----
@@ -59,11 +59,38 @@ SENSOR_MODELS = {
     (2, 7): ("CLAMP2000_5A", "Clamp 2000:1, 5 A", "characterized"),
     (2, 8): ("CLAMP2000_10A", "Clamp 2000:1, 10 A", "characterized"),
     (2, 9): ("CLAMP2000_20A", "Clamp 2000:1, 20 A", "characterized"),
-    (2, 10): ("CLAMP2000_30A", "Clamp 2000:1, 30 A", "reserved"),
+    (2, 10): ("CLAMP2000_30A", "Clamp 2000:1, 30 A", "characterized"),
     (2, 11): ("CLAMP2000_50A", "Clamp 2000:1, 50 A", "reserved"),
     (2, 12): ("CLAMP2000_80A", "Clamp 2000:1, 80 A", "characterized"),
     (2, 13): ("CLAMP2000_100A", "Clamp 2000:1, 100 A", "reserved"),
 }
+
+
+# (class, code) -> (nominal_a, fs_a, peak_a): rated RMS, RMS at clip onset
+# for a sine, instantaneous clip ceiling (a distorted load clips at
+# peak_a / crest factor). Models without known limits are absent.
+SENSOR_LIMITS = {
+    (1, 1): (5.0, 4.79, 6.77),
+    (1, 2): (10.0, 9.58, 13.54),
+    (1, 3): (30.0, 28.74, 40.62),
+    (1, 4): (50.0, 47.9, 67.7),
+    (1, 5): (100.0, 95.8, 135.4),
+    (1, 6): (20.0, 19.16, 27.08),
+    (1, 7): (60.0, 57.48, 81.24),
+    (2, 6): (1.0, 1.27, 1.8),
+    (2, 7): (4.6, 5.75, 8.18),
+    (2, 8): (10.18, 12.73, 18.0),
+    (2, 9): (20.4, 25.5, 36.0),
+    (2, 10): (29.95, 37.4, 52.9),
+    (2, 11): (50.91, 63.6, 90.0),
+    (2, 12): (76.8, 95.9, 135.0),
+    (2, 13): (101.82, 127.3, 180.0),
+}
+
+
+def limits(sensor_class: int, code: int):
+    """(nominal_a, fs_a, peak_a) or None if the limits are not known."""
+    return SENSOR_LIMITS.get((sensor_class, code))
 
 
 def lookup(sensor_class: int, code: int):

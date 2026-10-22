@@ -104,6 +104,68 @@ class SMBusBackend:
             )
         ) from last_exc
 
+    # ----- 16-bit transport (STD line) -------------------------------------
+
+    def std_read(self, addr, reg, n, retry=True):
+        """Read ``n`` bytes from 16-bit register ``reg`` in ONE I2C transaction.
+
+        Uses ``smbus2.i2c_rdwr`` with a combined write(pointer)+read: a repeated
+        START keeps the block coherent (no auto-increment pointer loss). Pointer
+        is big-endian (hi, lo); payload is the module's native little-endian.
+
+        Args:
+            retry: retry per SPEC §B.5 (default). Pass ``False`` for a single
+                attempt (polls during a flash stall; a retry adds noise there).
+
+        Raises:
+            RbAmpIOError: after the attempt budget is exhausted.
+        """
+        from smbus2 import i2c_msg
+        attempts = self._retry_attempts if retry else 1
+        last_exc = None
+        for attempt in range(attempts):
+            try:
+                w = i2c_msg.write(addr, [(reg >> 8) & 0xFF, reg & 0xFF])
+                r = i2c_msg.read(addr, n)
+                self._bus.i2c_rdwr(w, r)
+                if attempt > 0:
+                    self.retry_count_total += attempt
+                return bytes(r)
+            except OSError as exc:
+                last_exc = exc
+                if attempt + 1 < attempts and self._retry_gap_ms:
+                    time.sleep(self._retry_gap_ms / 1000.0)
+        if attempts > 1:
+            self.retry_count_total += attempts - 1
+        self.retry_exhaustion_count += 1
+        raise RbAmpIOError(
+            "std_read addr=0x{:02X} reg=0x{:04X} n={} failed after {} attempts: {}".format(
+                addr, reg, n, attempts, last_exc)) from last_exc
+
+    def std_write(self, addr, reg, data, retry=True):
+        """Write ``data`` to 16-bit register ``reg`` in ONE transaction
+        (pointer hi/lo then payload). ``retry=False`` for COMMAND opcodes."""
+        from smbus2 import i2c_msg
+        payload = [(reg >> 8) & 0xFF, reg & 0xFF] + list(bytearray(data))
+        attempts = self._retry_attempts if retry else 1
+        last_exc = None
+        for attempt in range(attempts):
+            try:
+                self._bus.i2c_rdwr(i2c_msg.write(addr, payload))
+                if attempt > 0:
+                    self.retry_count_total += attempt
+                return
+            except OSError as exc:
+                last_exc = exc
+                if attempt + 1 < attempts and self._retry_gap_ms:
+                    time.sleep(self._retry_gap_ms / 1000.0)
+        if attempts > 1:
+            self.retry_count_total += attempts - 1
+        self.retry_exhaustion_count += 1
+        raise RbAmpIOError(
+            "std_write addr=0x{:02X} reg=0x{:04X} failed after {} attempts: {}".format(
+                addr, reg, attempts, last_exc)) from last_exc
+
     # ----- NACK probe (used by variant detection) --------------------------
 
     def register_acks(self, addr, reg):

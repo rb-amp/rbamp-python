@@ -675,7 +675,6 @@ Reads the module's `HW_VARIANT (0x55)` register (the canonical v1.3 SKU byte):
 | `5` | I2 | 2 | no |
 | `6` | I3 | 3 | no |
 
-Codes `2` (UI2) and `3` (UI3) are reserved for roadmap variants.
 **This is the recommended path for autodetect** — the NACK-probe
 path has been removed (firmware never NACKs reads; unmapped →
 `0x00`).
@@ -992,9 +991,8 @@ address. To go over all known ones, iterate over the fleet.
 > ⚠ In the current `rbamp` build, provisioning is done through
 > `dev.prepare_address_change()` + `dev.commit_address_change()`
 > on a hand-created `RbAmp(bus, 0x50)` handle, then
-> `fleet.add(dev)`. A static `RbAmpFleet.provision()` method is on
-> the roadmap (S6 territory); ETA after the next release cycle. See
-> the snippet in [06 · Examples](06_examples.md), Scenario 2.
+> `fleet.add(dev)`. See the snippet in [06 · Examples](06_examples.md),
+> Scenario 2.
 >
 > **MUST: exactly one virgin on the bus at the moment of
 > provisioning.** Two modules at `0x50` simultaneously are
@@ -1207,7 +1205,7 @@ The authoritative SKU byte is `REG_HW_VARIANT (0x55)` (`dev.hw_variant`):
 |---|---|
 | `0x01` | UI1 |
 | `0x02` | UI2 |
-| `0x03` | UI3 (roadmap, not buildable on the current package) |
+| `0x03` | UI3 |
 | `0x04` | I1 |
 | `0x05` | I2 |
 | `0x06` | I3 |

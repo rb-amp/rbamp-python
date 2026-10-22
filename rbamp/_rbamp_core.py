@@ -20,6 +20,7 @@ import struct
 
 from . import _registers_v2 as R
 from . import _sensor_models as _SM
+from . import _sct_rating as _SCT
 from ._snapshot import (
     RbAmpSnapshot,
     RbAmpPeriodSnapshot,
@@ -40,6 +41,42 @@ from ._snapshot import (
     RbAmpVersionError,
 )
 from ._energy import RbAmpEnergy
+
+
+# ---------------------------------------------------------------------------
+# Read-before-write policy for sensor class / CT model (parity with esp-idf
+# rbampi_*_write_policy). Pure functions — host-testable with
+# no backend. The firmware clears the per-channel CT models on ANY sensor-class
+# write and re-applies the generic preset on ANY CT-model write, so a rewrite
+# of the SAME value is destructive; and a factory-paired module (class 2/3,
+# WIRED_CT / BUILTIN_CT) must not be silently reconfigured.
+WRITE_NOOP = 1      # same value already on the module: no bus write
+WRITE_PAIRED = 2    # factory-paired module: refuse (RbAmpModeError)
+WRITE_PROCEED = 3   # write it
+
+
+def _sensor_class_paired(cls):
+    return cls == _SM.SENSOR_CLASS_WIRED_CT or cls == _SM.SENSOR_CLASS_BUILTIN_CT
+
+
+def sensor_class_write_policy(current_cls, new_cls):
+    """WRITE_NOOP / WRITE_PAIRED / WRITE_PROCEED for a sensor-class write."""
+    if current_cls == new_cls:
+        return WRITE_NOOP
+    if _sensor_class_paired(current_cls):
+        return WRITE_PAIRED
+    return WRITE_PROCEED
+
+
+def ct_model_write_policy(current_cls, current_model, new_model, force):
+    """WRITE_NOOP / WRITE_PAIRED / WRITE_PROCEED for a CT-model write."""
+    if force:
+        return WRITE_PROCEED
+    if current_model == new_model:
+        return WRITE_NOOP
+    if _sensor_class_paired(current_cls):
+        return WRITE_PAIRED
+    return WRITE_PROCEED
 
 
 class _ChannelProxy:
@@ -126,6 +163,17 @@ class RbAmp:
         self._channels = 1
         self._has_voltage_hw = False
         self._energy = RbAmpEnergy()
+        # STD line (16-bit map): set by begin() when the 'ST' identity probe
+        # succeeds; None = BASIC (8-bit) module. See :mod:`rbamp._std`.
+        self._std = None
+
+        # SCT-013 rating-switch correction (BASIC fw <= 1.4.19). Per-channel
+        # scale applied to I/P/energy; 1.0 = no correction. Computed at begin()
+        # and after a detected restart. See :mod:`rbamp._sct_rating` and
+        # libs/spec/SCT_RATING_SWITCH.md.
+        self._ct_scale = {}          # ch -> float scale (absent => 1.0)
+        self._ct_rating_warn = {}    # ch -> (action, detail) for the last compute
+        self._ct_rating_enabled = True
 
         # Period-metering wall-clock state
         self._last_latch_ms = 0
@@ -185,6 +233,21 @@ class RbAmp:
             RbAmpIOError: device did not ACK.
             RbAmpVersionError: device returned 0 or 0xFF for REG_VERSION.
         """
+        # STD line (16-bit map) probe first — only if the backend can do a
+        # 16-bit transaction. A BASIC module (or a mock without std_read)
+        # yields None and falls through to the 8-bit path below.
+        if getattr(self._io, "std_read", None) is not None:
+            from ._std import _StdClient
+            std = _StdClient.detect(self._io, self._addr)
+            if std is not None:
+                self._std = std
+                self._channels = std.channels
+                self._has_voltage_hw = std.n_voltage > 0
+                self._topology = std.channels  # count may sit outside the BASIC enum
+                self._log_info(
+                    "begin: STD module map=0x{:02X} fw=0x{:08X} channels={} V={}",
+                    std.map_version, std.fw_ver, std.channels, std.n_voltage)
+                return
         version = self._io.read_byte(self._addr, R.REG_VERSION)
         if version == 0 or version == 0xFF:
             raise RbAmpVersionError(
@@ -192,6 +255,10 @@ class RbAmp:
             )
 
         self._detect_variant()
+
+        # SCT-013 rating-switch correction (BASIC fw <= 1.4.19) — read the
+        # applied gain per channel and compute the per-channel scale.
+        self._refresh_ct_scales()
 
         # Primer LATCH — discard first accumulator window. We record
         # last_latch_ms RIGHT AFTER the bus write (before the settle) so the
@@ -269,7 +336,7 @@ class RbAmp:
 
     # SKU map per truth-doc §1.2 — authoritative source for variant id.
     # (channels, topology_const, has_voltage_hw)
-    # v1.4: firmware commit bd2ad8e added 7=UI5, 8=UI7 (BUILD_VARIANT codes).
+    # v1.4: firmware added 7=UI5, 8=UI7 variant codes.
     # Older lab boards reporting raw 5/7 in HW_VARIANT will be reflashed
     # before release (root A5); library does not support the transitional
     # numbering — HW_VARIANT=5 remains I2.
@@ -280,8 +347,8 @@ class RbAmp:
         4: (1, TOPOLOGY_SINGLE,      False),  # I1
         5: (2, TOPOLOGY_SPLIT_PHASE, False),  # I2
         6: (3, TOPOLOGY_THREE_PHASE, False),  # I3
-        7: (5, TOPOLOGY_FIVE_CH,     True),   # UI5 (v1.4 senior SKU, F040)
-        8: (7, TOPOLOGY_SEVEN_CH,    True),   # UI7 (v1.4 senior SKU, F040)
+        7: (5, TOPOLOGY_FIVE_CH,     True),   # UI5 (v1.4 senior SKU)
+        8: (7, TOPOLOGY_SEVEN_CH,    True),   # UI7 (v1.4 senior SKU)
     }
 
     def _detect_variant(self):
@@ -327,7 +394,9 @@ class RbAmp:
         self._channels, self._topology, self._has_voltage_hw = sku
 
     # =====================================================================
-    # Real-time reads (SPEC §12 — RT block, 200 ms refresh on device)
+    # Real-time reads (SPEC §12 — RT block; device refreshes once per 100 ms
+    # measurement window on all shipped BASIC firmware (v1.2+);
+    # pre-v1.2 images used a 200 ms window)
     # =====================================================================
 
     def read_voltage(self, phase=0):
@@ -338,31 +407,45 @@ class RbAmp:
 
         Returns:
             float: RMS voltage in V.
+
+        On an STD module ``phase`` selects the voltage input (0..n_voltage-1).
         """
+        if self._std is not None:
+            return self._std.read_voltage(phase).u_rms
         if phase != 0:
             raise RbAmpParamError("phase must be 0 (only phase 0 supported)")
         return self._read_float_le(R.REG_V03_U_RMS, kind="u")
 
     def read_voltage_peak(self, phase=0):
         """Read peak voltage (wire reg 0x8A) in V."""
+        if self._std is not None:
+            return self._std.read_voltage(phase).u_peak
         if phase != 0:
             raise RbAmpParamError("phase must be 0")
         return self._read_float_le(R.REG_V03_U_PEAK, kind="u")
 
     def read_current(self, ch=0):
         """Read RMS current for one channel in A. See :meth:`_route_channel_read`."""
+        if self._std is not None:
+            return self._std.read_channel(ch).i_rms
         return self._route_channel_read(ch, R.REG_V03_I0_RMS, R.CHFIELD_I_RMS, "i")
 
     def read_current_peak(self, ch=0):
         """Read peak current for one channel in A. See :meth:`_route_channel_read`."""
+        if self._std is not None:
+            return self._std.read_channel(ch).i_peak
         return self._route_channel_read(ch, R.REG_V03_I0_PEAK, R.CHFIELD_I_PEAK, "i")
 
     def read_power(self, ch=0):
         """Read real power for one channel in W (signed). See :meth:`_route_channel_read`."""
+        if self._std is not None:
+            return self._std.read_channel(ch).p
         return self._route_channel_read(ch, R.REG_V03_P0_REAL, R.CHFIELD_P_REAL, "p")
 
     def read_power_factor(self, ch=0):
         """Read power factor for one channel in -1..+1. See :meth:`_route_channel_read`."""
+        if self._std is not None:
+            return self._std.read_channel(ch).pf
         return self._route_channel_read(ch, R.REG_V03_PF0, R.CHFIELD_PF, "pf")
 
     def read_period_avg_p(self, ch=0):
@@ -376,25 +459,128 @@ class RbAmp:
         ``CMD_LATCH_PERIOD`` (root A1/A2) — this reader gives per-channel
         access without re-latching.
 
-        Master computes ``E_Wh = avg_p * master_dt_s / 3600`` exactly as
-        for ch0-2; :class:`RbAmpEnergy` handles that for the flat trio in
-        :meth:`read_period_snapshot`. For ch 3..N-1 the caller integrates
-        externally (see :meth:`RbAmpFleet.aligned_snapshot` for a helper).
+        Master computes ``E_Wh = avg_p * master_dt_s / 3600`` for every
+        channel; :class:`RbAmpEnergy` does this for all populated channels in
+        :meth:`read_period_snapshot` (including ch3+ on senior SKUs).
+
+        Alias of :meth:`read_period_avg_power` (kept for the v1.4 senior-SKU
+        naming); both resolve ch0-2 on the flat registers and ch3+ through
+        the channel window.
         """
-        self._check_channel(ch)
-        if ch <= 2:
-            reg = R.REG_V03_PERIOD_AVG_P + (0 if ch == 0
-                                            else 4 * (ch - 1) + (0xC2 - 0xDC))
-            # Explicit: ch0 -> 0xDC, ch1 -> 0xC2, ch2 -> 0xC6 (map for clarity)
-            reg = {0: R.REG_V03_PERIOD_AVG_P,
-                   1: R.REG_V03_PERIOD_AVG_P_CH1,
-                   2: R.REG_V03_PERIOD_AVG_P_CH2}[ch]
-            return self._read_float_le(reg, kind="p")
-        return self._read_window_float(R.CHFIELD_PERIOD_AVG_P, ch, kind="p")
+        return self.read_period_avg_power(ch)
 
     def read_frequency(self):
-        """Read mains frequency (REG_AC_FREQ, 0x20) in Hz."""
+        """Read mains frequency in Hz (BASIC REG_AC_FREQ 0x20; STD FREQ cHz)."""
+        if self._std is not None:
+            return self._std.read_frequency()
         return float(self._io.read_byte(self._addr, R.REG_AC_FREQ))
+
+    # =====================================================================
+    # STD line (16-bit map) — on-device energy, angles, config (v1.6.0)
+    #
+    # These require an STD module (detected at begin()); on a BASIC module
+    # they raise RbAmpNotSupportedError. The common readers above
+    # (read_voltage / read_current / read_power / read_power_factor /
+    # read_frequency) work on both lines.
+    # =====================================================================
+
+    @property
+    def is_std(self):
+        """True if the module is on the STD 16-bit line (set by begin())."""
+        return self._std is not None
+
+    @property
+    def std(self):
+        """The internal STD client (advanced use), or None on a BASIC module."""
+        return self._std
+
+    def _require_std(self):
+        if self._std is None:
+            from ._snapshot import RbAmpNotSupportedError
+            raise RbAmpNotSupportedError(
+                "STD-line call on a BASIC (8-bit) module — not supported")
+        return self._std
+
+    def read_std_voltage(self, phase=0):
+        """Full STD voltage block (RMS/peak/THD/angle) for ``phase``."""
+        return self._require_std().read_voltage(phase)
+
+    def read_voltage_angle(self, phase=0):
+        """Voltage phase angle vs phase 0, as ``(degrees, valid)``.
+
+        ``valid`` is False on a single-voltage module or firmware < 0x7A."""
+        v = self._require_std().read_voltage(phase)
+        return v.angle_deg, v.angle_valid
+
+    def read_phase_sequence(self):
+        """Phase-sequence code: 0 n/a · 1 forward · 2 reverse · 3 abnormal.
+
+        Raises RbAmpNotSupportedError on BASIC or firmware < 0x7A."""
+        return self._require_std().read_phase_seq()
+
+    def read_std_channel(self, ch=0):
+        """Full STD current-channel block (I/P/Q/S/PF + harmonics)."""
+        return self._require_std().read_channel(ch)
+
+    def read_std_totals(self, k=0):
+        """STD TOTALS block ``k`` (0 = grand total; per-phase need map 0x36+)."""
+        return self._require_std().read_totals(k)
+
+    def read_reactive(self, ch=0):
+        """Reactive power for one channel in var (STD only)."""
+        return self._require_std().read_channel(ch).q
+
+    def read_apparent(self, ch=0):
+        """Apparent power for one channel in VA (STD only)."""
+        return self._require_std().read_channel(ch).s
+
+    def read_std_energy(self):
+        """On-device life-time energy snapshot (:class:`rbamp._std.RbAmpStdEnergy`).
+
+        Carries active Wh/mWh/µWh import/export/net and reactive varh/µvarh,
+        plus per-channel mWh/µWh. The µ fields are always populated (scaled
+        from the coarse counters when the module lacks the fine ones — check
+        ``.fine`` / ``.fine_reactive``). Requires CAPABILITIES ON_DEVICE_ENERGY."""
+        return self._require_std().read_energy()
+
+    @staticmethod
+    def std_energy_delta(prev, now):
+        """Energy consumed between two :meth:`read_std_energy` snapshots.
+
+        Returns ``(delta, module_restarted)``; ``delta`` is None if the
+        generation counter changed (life-time reset / adopt). See
+        :func:`rbamp._std.energy_delta`."""
+        from ._std import energy_delta
+        return energy_delta(prev, now)
+
+    def read_std_config(self):
+        """STD configuration block (:class:`rbamp._std.RbAmpStdConfig`)."""
+        return self._require_std().read_config()
+
+    def read_std_health(self):
+        """STD status / health block (:class:`rbamp._std.RbAmpStdHealth`)."""
+        return self._require_std().read_health()
+
+    def get_start_current(self):
+        """CFG_START_UA in µA (0 = off). RbAmpNotSupportedError below fw 0x7B."""
+        return self._require_std().get_start_current()
+
+    def set_start_current(self, ua):
+        """Set CFG_START_UA (0 = off; 10..2540 µA in 10 µA steps).
+
+        Below this current a channel's energy does not count into import/export
+        (readings I/P/Q are unaffected; default 400 µA). Applies at once; call
+        :meth:`save_config` to persist. Out-of-range → RbAmpParamError (no bus
+        write). RbAmpNotSupportedError below firmware 0x7B."""
+        return self._require_std().set_start_current(ua)
+
+    def save_config(self):
+        """Persist the writable STD config to flash (SAVE_CONFIG). Blocking."""
+        return self._require_std().save_config()
+
+    def set_time(self, unix_epoch):
+        """Set the device RTC epoch (STD map 0x35+). Epoch < 2020 → ParamError."""
+        return self._require_std().set_time(unix_epoch)
 
     def read_all(self):
         """One-shot read of the full RT block.
@@ -476,19 +662,32 @@ class RbAmp:
         return (self._io.read_byte(self._addr, R.REG_V03_PERIOD_VALID) & 0x01) != 0
 
     def read_period_avg_power(self, ch=0):
-        """Read the per-channel period-average real power register (W).
+        """Read the per-channel period-average real power (W).
 
-        Reads from 0xDC (ch0), 0xC2 (ch1) or 0xC6 (ch2). Must be called
-        after :meth:`latch_period` + 50 ms + valid check.
+        ch0-2 read the flat registers 0xDC / 0xC2 / 0xC6. On senior SKUs
+        (UI5/UI7) ch3..N-1 read the same latched value through the channel
+        window (field 13 = ``PERIOD_AVG_P``) — the firmware latches every
+        channel atomically under IRQ-off on ``CMD_LATCH_PERIOD``, so a read
+        after one latch is coherent across all channels.
+
+        Must be called after :meth:`latch_period` + 50 ms + valid check.
         """
         self._check_channel(ch)
-        # Per SPEC §7: register addresses are non-contiguous.
-        reg = (
-            R.REG_V03_PERIOD_AVG_P,       # ch0 (0xDC)
-            R.REG_V03_PERIOD_AVG_P_CH1,   # ch1 (0xC2)
-            R.REG_V03_PERIOD_AVG_P_CH2,   # ch2 (0xC6)
-        )[ch]
-        return self._read_float_le(reg, kind="p")
+        if ch > 2:
+            value = self._read_window_float(R.CHFIELD_PERIOD_AVG_P, ch, kind="p")
+        else:
+            # Per SPEC §7: flat register addresses are non-contiguous.
+            reg = (
+                R.REG_V03_PERIOD_AVG_P,       # ch0 (0xDC)
+                R.REG_V03_PERIOD_AVG_P_CH1,   # ch1 (0xC2)
+                R.REG_V03_PERIOD_AVG_P_CH2,   # ch2 (0xC6)
+            )[ch]
+            value = self._read_float_le(reg, kind="p")
+        # SCT rating-switch correction — avg_p feeds the Wh accumulator, so the
+        # energy path inherits the same scale as live power.
+        if self._ct_scale:
+            value *= self._ct_scale.get(ch, 1.0)
+        return value
 
     def read_period_max_power(self):
         """Read the channel-0 peak-power-per-period register (0xE0) in W."""
@@ -544,7 +743,7 @@ class RbAmp:
         # full interval → integration is correct. Do NOT revert to chip
         # period_ms here — see L9 callout.
         now_ms = self._io.now_ms()
-        out = RbAmpPeriodSnapshot()
+        out = RbAmpPeriodSnapshot(self._channels)
         if self._have_last_latch:
             out.master_dt_ms = self._io.ms_diff(now_ms, self._last_latch_ms)
 
@@ -554,6 +753,9 @@ class RbAmp:
             self._log_info("period STALE — discarded (anchor held; next success covers full interval)")
             raise RbAmpStaleError("period snapshot is stale")
 
+        # Fill every channel's latched period-average power. avg_p is sized to
+        # the channel count; ch0-2 read the flat registers, ch3+ (senior SKUs)
+        # read window field 13 — same coherent latch (read_period_avg_power).
         for ch in range(self._channels):
             out.avg_p[ch] = self.read_period_avg_power(ch)
         out.max_p = self.read_period_max_power()
@@ -649,18 +851,32 @@ class RbAmp:
 
         Raises:
             RbAmpParamError: ``cls`` outside 0..3.
+            RbAmpModeError: the module is factory-paired (current class 2/3,
+                WIRED_CT / BUILTIN_CT) and ``cls`` differs — reconfiguring it
+                would clear the fitted-sensor calibration. Refused.
         """
         cls_int = int(cls)
         if cls_int < 0 or cls_int > 3:
             raise RbAmpParamError(
                 "sensor class must be 0..3 (RbAmpSensorClass member), got {}".format(cls_int)
             )
+        # Read-before-write: the firmware clears the CT models on ANY class
+        # write, so an unchanged value is a destructive no-op we skip; a
+        # factory-paired class is never silently rewritten.
+        cur = self.read_sensor_class()
+        policy = sensor_class_write_policy(cur, cls_int)
+        if policy == WRITE_NOOP:
+            return
+        if policy == WRITE_PAIRED:
+            raise RbAmpModeError(
+                "set_sensor_class refused: the module is calibrated with its "
+                "fitted sensor (class {}); changing it would clear that "
+                "calibration".format(cur))
         self._io.write_byte(self._addr, R.REG_SENSOR_CLASS, cls_int)
         self._save_user_config()
 
-    # v1.5.0: (class, code) pairs are looked up in libs/spec/sensor_models.yaml
-    # via the auto-generated :mod:`rbamp._sensor_models` registry (root's
-    # canonical emitter — see commit 26e2ab9). The old hand-maintained
+    # v1.5.0: (class, code) pairs are looked up via the auto-generated
+    # :mod:`rbamp._sensor_models` registry. The old hand-maintained
     # ``_CT_ACCEPTED`` dict is gone: it drifted six models behind in two
     # days, exactly what the registry exists to kill.
     #
@@ -722,16 +938,13 @@ class RbAmp:
 
         Raises:
             RbAmpParamError: code not accepted for current class.
-            RbAmpModeError: v1.2+ firmware with sensor class still UNSET.
+            RbAmpModeError: v1.2+ firmware with sensor class still UNSET, or
+                the module is factory-paired (class 2/3) — see
+                :meth:`set_ct_model_ch`.
         """
-        self._check_v12_sensor_class_pinned()
-        self._validate_ct_code(code)
-        # Wire-canon (same as set_ct_model_ch for ch0): REG → CMD → 5 ms → SAVE.
-        # v1.5.0: SAVE_USER_CONFIG (production-ungated) not SAVE_GAINS.
-        self._io.write_byte(self._addr, R.REG_CT_MODEL, code)
-        self._io.write_byte(self._addr, R.REG_COMMAND, R.CMD_SET_CT_MODEL_CH0)
-        self._io.sleep_ms(5)
-        self._save_user_config()
+        # Identical wire-canon to the ch0 branch of set_ct_model_ch; delegating
+        # keeps a single guarded write path (read-before-write, paired refuse).
+        self.set_ct_model_ch(0, code)
 
     def set_ct_model_ch(self, channel, code):
         """Set the CT model on a specific channel.
@@ -765,19 +978,48 @@ class RbAmp:
                 say (returns ERR_PARAM if its own preset table lacks the
                 row, even for a registry-accepted pair).
 
+        A CT-model write replaces the channel's calibration with the generic
+        preset, so (v1.5.0+) the write is guarded read-before-write: a code
+        equal to the model already applied is a no-op (no bus traffic); a
+        factory-paired module (sensor class 2/3, WIRED_CT / BUILTIN_CT) is
+        refused with :class:`RbAmpModeError` — use :meth:`set_ct_model_ch_force`
+        in a service context to override.
+
         Raises:
             RbAmpParamError: channel outside 0..channels-1; code not
                 shipping in the registry for the pinned class; or module
                 returned ERR_PARAM after the window write (window path
                 only).
-            RbAmpModeError: v1.2+ firmware with sensor class still UNSET.
+            RbAmpModeError: v1.2+ firmware with sensor class still UNSET, or
+                the module is factory-paired (class 2/3) and the code differs.
         """
+        self._set_ct_model_ch_impl(channel, code, force=False)
+
+    def set_ct_model_ch_force(self, channel, code):
+        """Service-path CT-model write that bypasses the read-before-write guard.
+
+        Same wire sequence as :meth:`set_ct_model_ch` but writes even when the
+        module is factory-paired (class 2/3) or already holds the code. For
+        technicians re-sensoring a unit; the module still validates the
+        (class, code) preset and raises :class:`RbAmpParamError` on a bad pair.
+        """
+        self._set_ct_model_ch_impl(channel, code, force=True)
+
+    def _set_ct_model_ch_impl(self, channel, code, force):
         if channel < 0 or channel >= self._channels:
             raise RbAmpParamError(
                 "channel must be 0..{}, got {}".format(self._channels - 1, channel)
             )
         self._check_v12_sensor_class_pinned()
+        # Client-side fast-fail on an unwritable code (unset/reserved/unknown)
+        # before the read-before-write guard, so a bad code is reported as
+        # such regardless of the module's paired state.
         self._validate_ct_code(code)
+        # Read-before-write: skip an unchanged model (re-applying would wipe
+        # the channel's calibration), refuse a factory-paired module unless
+        # forced.
+        if self._ct_model_guard(channel, code, force):
+            return
 
         if channel <= 2:
             # Wire-canon: REG first (lands in callback's pending-code register),
@@ -842,6 +1084,166 @@ class RbAmp:
         self._select_channel_window(R.CHFIELD_CT_MODEL, channel)
         # Only low byte of 0x3C..0x3F carries the value; upper bytes zero.
         return self._io.read_byte(self._addr, R.REG_CHANNEL_DATA)
+
+    def read_sensor_class(self):
+        """Read the pinned sensor class (``REG_SENSOR_CLASS`` 0x25).
+
+        Returns:
+            int: wire encoding — 0 UNSET, 1 SCT_013, 2 WIRED_CT, 3 BUILTIN_CT.
+            On pre-v1.2 firmware the register is unmapped and reads 0.
+        """
+        return self._io.read_byte(self._addr, R.REG_SENSOR_CLASS)
+
+    # =====================================================================
+    # SCT-013 rating-switch correction (BASIC fw <= 1.4.19)
+    # =====================================================================
+    #
+    # Canon: libs/spec/SCT_RATING_SWITCH.md. SCT batches are calibrated on
+    # model 3 (SCT-013-030). On a model switch to X != 3, fw <= 1.4.19 keeps
+    # the 030 gain after a restart but shows X, so I/P read at the 030 scale.
+    # The library reads the applied gain (user-mode read; the gain write is
+    # factory-gated and NEVER issued here) and scales the reading by
+    #   s = preset(X) * c(X) / preset(3).
+    # PF and U are never scaled. fw >= 1.4.20 self-corrects -> s = 1.
+
+    # Channel-access window field for the applied gain (field 5). Not in the
+    # generated register map (which exposes fields 0-3/13/15); flagged to root
+    # for codegen. Used only for ch >= 3 on senior SKUs.
+    _CHFIELD_GAIN = 5
+
+    # REG_CAPABILITY (0x57/0x58, u16 LE) bit 12 = CAP_SCT_RATING_SELF: the
+    # firmware applies the SCT rating-switch scale itself (reserved in fw
+    # 1.4.20). Detect the feature by this bit, NOT by VERSION (the register-
+    # model rule). Not yet in the generated map (highest generated bit is
+    # CAP_IAP = 1<<11); flagged to root for codegen.
+    _CAP_SCT_RATING_SELF = 1 << 12
+
+    def _sct_self_corrects(self):
+        """True if the firmware applies the rating-switch scale itself, so the
+        library must NOT (s = 1). Gated on REG_CAPABILITY bit 12
+        (CAP_SCT_RATING_SELF); reads 0 (absent) on fw <= 1.4.19."""
+        try:
+            return bool(self.read_capability() & self._CAP_SCT_RATING_SELF)
+        except RbAmpError:
+            return False
+
+    def _read_ct_gain(self, ch):
+        """Read the current gain the module applies on a channel (float32 LE).
+
+        ch0-2 read the flat gain registers 0xF4 / 0xF8 / 0xFC; ch3+ read
+        channel window field 5. Read-only — the library never writes gain.
+        """
+        if ch <= 2:
+            reg = R.REG_V03_I0_GAIN + ch * 4
+            buf = bytes([self._io.read_byte(self._addr, reg + i) for i in range(4)])
+        else:
+            self._select_channel_window(self._CHFIELD_GAIN, ch)
+            buf = bytes([self._io.read_byte(self._addr, R.REG_CHANNEL_DATA + i)
+                         for i in range(4)])
+        return struct.unpack("<f", buf)[0]
+
+    def _compute_ct_scale(self, ch, cls):
+        """Compute (and apply the one-shot reset if needed) the rating scale
+        for one SCT channel. Returns the scale (1.0 if no correction)."""
+        model = self.read_ct_model_ch(ch)
+        g_a = self._read_ct_gain(ch)
+        s, action, detail = _SCT.rating_correction(model, g_a)
+        if action == _SCT.RATING_NEEDS_RESET:
+            # Same-boot raw-preset state: someone wrote the model this boot, so
+            # the per-unit trim k is unknown. One CMD_RESET recovers the flash
+            # (factory-gain) state; re-read and re-evaluate once.
+            self._log_info("ct_scale ch{}: {} — issuing CMD_RESET", ch, detail)
+            self._raw_reset()
+            model = self.read_ct_model_ch(ch)
+            g_a = self._read_ct_gain(ch)
+            s, action, detail = _SCT.rating_correction(model, g_a, post_reset=True)
+        self._ct_rating_warn[ch] = (action, detail)
+        if action in (_SCT.RATING_WARN_GAIN, _SCT.RATING_WARN_UNCAL):
+            self._log_info("ct_scale ch{}: WARNING {}", ch, detail)
+        elif action == _SCT.RATING_OK:
+            self._log_info("ct_scale ch{}: model {} s={:.4f} ({})", ch, model, s, detail)
+        return s
+
+    def _refresh_ct_scales(self):
+        """Recompute the per-channel rating scale. SCT (class 1) only, on a
+        BASIC module, when correction is enabled and the fw does not self-
+        correct. Called at :meth:`begin` and after a detected restart."""
+        self._ct_scale = {}
+        if self._std is not None or not self._ct_rating_enabled:
+            return
+        if self._sct_self_corrects():
+            return
+        try:
+            cls = self.read_sensor_class()
+        except RbAmpError:
+            return
+        if cls != _SCT.SENSOR_CLASS_SCT_013:
+            return  # class 2/3 are factory-paired — never scaled; model untouched
+        for ch in range(self._channels):
+            try:
+                s = self._compute_ct_scale(ch, cls)
+            except RbAmpError as exc:
+                self._log_info("ct_scale ch{}: read failed ({}) — s=1", ch, exc)
+                s = 1.0
+            if s != 1.0:
+                self._ct_scale[ch] = s
+
+    def refresh_rating_correction(self):
+        """Public: re-read model + gain and recompute the SCT rating scale.
+
+        Call after the module restarts for a reason the library did not drive
+        (e.g. the user set a new sensor model, saved, and reset externally).
+        :meth:`begin` and :meth:`reset` already refresh automatically.
+        """
+        self._refresh_ct_scales()
+
+    def set_rating_correction(self, enabled):
+        """Enable/disable the SCT rating-switch correction (default enabled).
+
+        Disable on a module whose firmware already self-corrects (fw >= 1.4.20)
+        or to read the raw 030-scale values. Recomputes immediately.
+        """
+        self._ct_rating_enabled = bool(enabled)
+        self._refresh_ct_scales()
+
+    @property
+    def rating_correction_enabled(self):
+        """True if the SCT rating-switch correction is active."""
+        return self._ct_rating_enabled
+
+    def ct_rating_scale(self, ch=0):
+        """The rating scale currently applied to I/P/energy on a channel."""
+        return self._ct_scale.get(ch, 1.0)
+
+    def ct_rating_status(self, ch=0):
+        """``(action, detail)`` of the last rating compute for a channel, or
+        ``None`` if the channel was never evaluated (e.g. not SCT)."""
+        return self._ct_rating_warn.get(ch)
+
+    def _ct_model_guard(self, channel, code, force):
+        """Read-before-write guard for one channel's CT model.
+
+        Returns ``True`` if the write should be SKIPPED (the module already
+        holds this model — re-applying would wipe the channel's calibration).
+        Raises :class:`RbAmpModeError` if the module is factory-paired
+        (class 2/3) and ``force`` is ``False``.
+        """
+        if force:
+            return False  # service path: proceed, skip the read-before-write probe
+        cls = self.read_sensor_class()
+        try:
+            cur = self.read_ct_model_ch(channel)
+        except RbAmpError:
+            cur = 0xFF  # unreadable mirror: never mistaken for "same"
+        policy = ct_model_write_policy(cls, cur, code, force)
+        if policy == WRITE_NOOP:
+            return True
+        if policy == WRITE_PAIRED:
+            raise RbAmpModeError(
+                "set_ct_model refused on channel {}: the module is calibrated "
+                "with its fitted sensor (class {}); use "
+                "set_ct_model_ch_force(...) in a service context".format(channel, cls))
+        return False
 
     def _check_v12_sensor_class_pinned(self):
         """Raise RbAmpModeError if v1.2+ firmware has REG_SENSOR_CLASS == UNSET.
@@ -1008,10 +1410,18 @@ class RbAmp:
         self._io.write_byte(self._addr, R.REG_COMMAND, R.CMD_FACTORY_RESET)
         self._io.sleep_ms(R.SETTLE_MS_FACTORY_RESET)
 
-    def reset(self):
-        """Issue CMD_RESET (0x01) and wait 100 ms."""
+    def _raw_reset(self):
+        """Issue CMD_RESET (0x01) and wait, WITHOUT recomputing the rating
+        scale (used internally by the rating compute, which drives its own
+        reset — see :meth:`_compute_ct_scale`)."""
         self._io.write_byte(self._addr, R.REG_COMMAND, R.CMD_RESET)
         self._io.sleep_ms(R.SETTLE_MS_RESET)
+
+    def reset(self):
+        """Issue CMD_RESET (0x01), wait 100 ms, and recompute the SCT rating
+        correction (a reset is a restart — see SCT_RATING_SWITCH.md §2)."""
+        self._raw_reset()
+        self._refresh_ct_scales()
 
     # =====================================================================
     # Identity / capability (v1.3, truth-doc §1)
@@ -1377,8 +1787,13 @@ class RbAmp:
         """
         self._check_channel(ch)
         if ch <= 2:
-            return self._read_float_le(flat_reg + ch * 4, kind=kind)
-        return self._read_window_float(window_field, ch, kind=kind)
+            value = self._read_float_le(flat_reg + ch * 4, kind=kind)
+        else:
+            value = self._read_window_float(window_field, ch, kind=kind)
+        # SCT rating-switch correction scales current and real power (not PF/U).
+        if kind in ("i", "p") and self._ct_scale:
+            value *= self._ct_scale.get(ch, 1.0)
+        return value
 
     def _read_window_float(self, field, ch, kind="p"):
         """Select + read one float from the channel-access window.

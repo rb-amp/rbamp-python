@@ -23,8 +23,8 @@ _VARIANT_BYTE = {
     (1, False): 4,   # I1
     (2, False): 5,   # I2
     (3, False): 6,   # I3
-    (5, True):  7,   # UI5  (v1.4 senior, F040)
-    (7, True):  8,   # UI7  (v1.4 senior, F040)
+    (5, True):  7,   # UI5  (v1.4 senior)
+    (7, True):  8,   # UI7  (v1.4 senior)
 }
 
 
@@ -74,6 +74,8 @@ class MockBackend:
         self.fail_addresses = set()
         self._now = 0
         self._addr_commit_armed = False
+        self._reset_gain = {}    # ch -> gain applied on the next CMD_RESET
+        self.reset_count = 0     # number of CMD_RESET writes seen
         self.writes = []         # log of (addr, reg, val) for assertions
         self.broadcasts = []     # log of payload bytes
         self.sleeps = []         # log of sleep_ms calls
@@ -154,6 +156,27 @@ class MockBackend:
                  1: R.REG_V03_PERIOD_AVG_P_CH1,
                  2: R.REG_V03_PERIOD_AVG_P_CH2}
         self._set_float(addrs[ch], watts)
+
+    def set_gain(self, ch, g):
+        """Test helper: seed the applied gain register for ch0-2 (0xF4/0xF8/0xFC,
+        float32 LE) — the value :meth:`RbAmp._read_ct_gain` reads."""
+        self._set_float(R.REG_V03_I0_GAIN + ch * 4, g)
+
+    def set_sensor_class(self, cls):
+        """Test helper: pin REG_SENSOR_CLASS (0x25)."""
+        self._regs[R.REG_SENSOR_CLASS] = cls & 0xFF
+
+    def set_model(self, ch, code):
+        """Test helper: set the applied CT model mirror for a channel."""
+        if ch <= 2:
+            self._regs[R.REG_CT_MODEL_CH0 + ch] = code & 0xFF
+        if ch < len(self._channel_models):
+            self._channel_models[ch] = code & 0xFF
+
+    def set_gain_after_reset(self, ch, g):
+        """Test helper: stage the gain a channel will show AFTER the next
+        CMD_RESET (models the flash state recovered on restart)."""
+        self._reset_gain[ch] = float(g)
 
     def advance_ms(self, ms):
         self._now += ms
@@ -270,6 +293,12 @@ class MockBackend:
                 and getattr(self, "_pending_new_addr", None) is not None:
             self._slave_addr = self._pending_new_addr
             self._pending_new_addr = None
+        # SCT rating-switch tests: CMD_RESET recovers the flash (factory-gain)
+        # state — apply any staged post-reset gain per channel.
+        if reg == R.REG_COMMAND and val == R.CMD_RESET:
+            self.reset_count += 1
+            for _ch, _g in self._reset_gain.items():
+                self._set_float(R.REG_V03_I0_GAIN + _ch * 4, _g)
 
     def register_acks(self, addr, reg):
         """Legacy ACK-probe shim — kept for backward compat with old tests.
@@ -337,13 +366,13 @@ def mock_ui1():
 
 @pytest.fixture
 def mock_ui5():
-    """A UI5 senior SKU (5 current channels + voltage), F040-based."""
+    """A UI5 senior SKU (5 current channels + voltage)."""
     return MockBackend(slave_addr=0x50, channels=5, has_voltage=True, mode_factory=0)
 
 
 @pytest.fixture
 def mock_ui7():
-    """A UI7 senior SKU (7 current channels + voltage), F040-based."""
+    """A UI7 senior SKU (7 current channels + voltage)."""
     return MockBackend(slave_addr=0x50, channels=7, has_voltage=True, mode_factory=0)
 
 

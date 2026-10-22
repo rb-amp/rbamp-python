@@ -1,7 +1,7 @@
 """Stage 1B v1.3 fixes — variant detect via 0x55 + GC frame + two-phase addr.
 
-Bug refs from rbamp-dev.docs cross-lib parity audit (baton 18:30Z 2026-06-14)
-plus root [SEED v1.3] (2026-06-16):
+Bug refs from the cross-library parity audit (2026-06-14)
+plus the v1.3 seed (2026-06-16):
 
 - #3: 5-byte GC frame `A5 27 <group> <tick_lo> <tick_hi>` per truth-doc §5.4.
        Latch-only by FW design (destructive opcodes not honoured over GC).

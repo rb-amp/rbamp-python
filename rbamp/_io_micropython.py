@@ -75,7 +75,6 @@ class MachineI2CBackend:
         # attempt. Distinguishes silent recovery from outright failure:
         # rate of retries / cycle tells you bus health, while
         # ``retry_exhaustion_count`` tells you how often retry failed.
-        # Per root baton 2026-05-25T00:30Z (Phase 2 ACK Q2 answer).
         self.retry_exhaustion_count = 0
         self.retry_count_total = 0
 
@@ -134,6 +133,54 @@ class MachineI2CBackend:
                 addr, reg, val, self._retry_attempts, last_exc
             )
         ) from last_exc
+
+    # ----- 16-bit transport (STD line) -------------------------------------
+    #
+    # NOTE (v1.6.0): the STD client ships validated on CPython (smbus2). The
+    # MicroPython 16-bit path below uses ``machine.I2C`` 16-bit memory ops
+    # (``addrsize=16``) — a coherent pointer-write + block-read in one
+    # transaction — but is not yet HIL-validated on an ESP32 against an STD
+    # module. See the library README.
+
+    def std_read(self, addr, reg, n, retry=True):
+        """Read ``n`` bytes from 16-bit register ``reg`` in one transaction.
+
+        ``readfrom_mem(..., addrsize=16)`` issues the 16-bit (big-endian)
+        pointer then a repeated-START read of ``n`` bytes — coherent, no
+        pointer-loss. ``retry=False`` → single attempt (flash-stall polls)."""
+        attempts = self._retry_attempts if retry else 1
+        last_exc = None
+        for attempt in range(attempts):
+            try:
+                return bytes(self._bus.readfrom_mem(addr, reg, n, addrsize=16))
+            except OSError as exc:
+                last_exc = exc
+                if attempt + 1 < attempts:
+                    self.retry_count_total += 1
+                    self.sleep_ms(self._retry_gap_ms)
+        self.retry_exhaustion_count += 1
+        raise RbAmpIOError(
+            "std_read addr=0x{:02X} reg=0x{:04X} n={} failed after {} attempts: {}".format(
+                addr, reg, n, attempts, last_exc)) from last_exc
+
+    def std_write(self, addr, reg, data, retry=True):
+        """Write ``data`` to 16-bit register ``reg`` in one transaction.
+        ``retry=False`` for COMMAND opcodes (a retry could land twice)."""
+        attempts = self._retry_attempts if retry else 1
+        last_exc = None
+        for attempt in range(attempts):
+            try:
+                self._bus.writeto_mem(addr, reg, bytes(data), addrsize=16)
+                return
+            except OSError as exc:
+                last_exc = exc
+                if attempt + 1 < attempts:
+                    self.retry_count_total += 1
+                    self.sleep_ms(self._retry_gap_ms)
+        self.retry_exhaustion_count += 1
+        raise RbAmpIOError(
+            "std_write addr=0x{:02X} reg=0x{:04X} failed after {} attempts: {}".format(
+                addr, reg, attempts, last_exc)) from last_exc
 
     # ----- diagnostic counters ---------------------------------------------
 

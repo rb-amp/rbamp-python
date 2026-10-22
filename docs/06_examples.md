@@ -674,13 +674,6 @@ machine.deepsleep(SLEEP_MS)
 The full sketch (with WiFi setup, MQTT publish, RTC magic-marker
 guards) is in [`examples_upy/06_deep_sleep.py`](https://github.com/rb-amp/rbamp-python/blob/main/rbamp/examples_upy/06_deep_sleep.py).
 
-> 🛣 **Roadmap.** A future package version (v1.2+) is expected to
-> add `dev.warm_open()` — a lightweight context manager without the
-> CMD_LATCH_PERIOD primer, which will make it simpler to read
-> `read_period_snapshot()` by default after a deep-sleep wake. Until
-> then, the pattern above (skip_latch=True + known SLEEP_MS) is
-> canonical.
-
 **Energy budget** (ESP32-WROOM on a 2000 mAh Li-ion, 10-minute
 interval):
 

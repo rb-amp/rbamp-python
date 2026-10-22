@@ -1,8 +1,7 @@
 """
 v1.5.0 tests — per-channel CT_MODEL via channel-access window field 15.
 
-Root release contract (baton `field15-lib-update`, firmware v1.4.18 signed
-on production silicon):
+Root release contract (firmware v1.4.18 signed on production silicon):
   1. Window 0x32 = (field<<4)|ch, field 15 = CT_MODEL, RW, per-channel.
      Write: 0x3C=model, 0x3D=0, 0x3E=0, 0x3F=0 — each byte its own txn.
      Read : 0x3C..0x3F u32 LE, low byte significant.
@@ -11,6 +10,12 @@ on production silicon):
   4. Model list ONLY from libs/spec/sensor_models.yaml (registry).
   5. Public API canon: one call with channel index (route internally).
   6. Test rule: every DUT write is confirmed by readback.
+
+v1.6.0 note: WIRED_CT is a factory-paired class, so the read-before-write
+guard refuses a model change on the plain `set_ct_model_ch`. The wire-mechanics
+tests below use the service path `set_ct_model_ch_force` (identical apply/save/
+readback machinery, guard bypassed) on these paired fixtures. The guard itself
+is covered in test_v13_stage2 (plain-setter refusal, no-op skip, force).
 """
 import pytest
 
@@ -64,7 +69,7 @@ def test_set_ct_model_ch_accepts_full_ui7_range():
     # Registry rows for class 2: 6=CLAMP2000_1A, 7=5A, 8=10A, 9=20A, 12=80A.
     plan = {0: 6, 1: 7, 2: 8, 3: 9, 4: 6, 5: 12, 6: 7}
     for ch, code in plan.items():
-        dev.set_ct_model_ch(ch, code)
+        dev.set_ct_model_ch_force(ch, code)
     # Rule 6: readback each channel to confirm the write landed.
     for ch, code in plan.items():
         assert dev.read_ct_model_ch(ch) == code, \
@@ -77,9 +82,9 @@ def test_set_ct_model_ch_rejects_out_of_range():
     m = _ui3_wired_ct()  # 3-channel variant
     dev = RbAmp(m, addr=0x50); dev.begin()
     with pytest.raises(RbAmpParamError):
-        dev.set_ct_model_ch(3, 6)  # UI3 has only 0..2
+        dev.set_ct_model_ch_force(3, 6)  # UI3 has only 0..2
     with pytest.raises(RbAmpParamError):
-        dev.set_ct_model_ch(-1, 6)
+        dev.set_ct_model_ch_force(-1, 6)
 
 
 def test_set_ct_model_ch_ui7_rejects_channel_7():
@@ -87,7 +92,7 @@ def test_set_ct_model_ch_ui7_rejects_channel_7():
     m = _ui7_wired_ct()
     dev = RbAmp(m, addr=0x50); dev.begin()
     with pytest.raises(RbAmpParamError):
-        dev.set_ct_model_ch(7, 6)
+        dev.set_ct_model_ch_force(7, 6)
 
 
 # ---------------------------------------------------------------------------
@@ -100,7 +105,7 @@ def test_set_ct_model_ch5_uses_window_write_sequence():
     dev = RbAmp(m, addr=0x50); dev.begin()
     m.writes.clear()
 
-    dev.set_ct_model_ch(5, 6)  # WIRED_CT CLAMP2000_1A
+    dev.set_ct_model_ch_force(5, 6)  # WIRED_CT CLAMP2000_1A
 
     # Filter to just the window-related writes for ch=5, field=15.
     window_writes = [w for w in m.writes if w[1] in (
@@ -119,7 +124,7 @@ def test_read_ct_model_ch5_reselects_before_read():
     """Re-select before every read (rule #1 of the window contract)."""
     m = _ui7_wired_ct()
     dev = RbAmp(m, addr=0x50); dev.begin()
-    dev.set_ct_model_ch(5, 7)
+    dev.set_ct_model_ch_force(5, 7)
     m.writes.clear()
 
     result = dev.read_ct_model_ch(5)
@@ -143,7 +148,7 @@ def test_set_ct_model_ch5_err_param_surfaced():
 
     dev = RbAmp(m, addr=0x50); dev.begin()
     with pytest.raises(RbAmpParamError):
-        dev.set_ct_model_ch(5, 7)
+        dev.set_ct_model_ch_force(5, 7)
 
     # Rule 2 (non-clobber): channel keeps prior model.
     assert dev.read_ct_model_ch(5) == 6
@@ -155,7 +160,7 @@ def test_set_ct_model_ch5_err_param_clears_error_reg():
     m.err_param_pairs.add((int(RbAmpSensorClass.WIRED_CT), 8))
     dev = RbAmp(m, addr=0x50); dev.begin()
     with pytest.raises(RbAmpParamError):
-        dev.set_ct_model_ch(4, 8)
+        dev.set_ct_model_ch_force(4, 8)
     # After exception + cleanup, REG_ERROR should be back to OK.
     assert m._regs[R.REG_ERROR] == R.DEV_ERR_OK
 
@@ -168,9 +173,9 @@ def test_client_rejects_reserved_row_client_side():
     """Reserved status in registry (row exists, no preset table entry)."""
     m = _ui7_wired_ct()
     dev = RbAmp(m, addr=0x50); dev.begin()
-    # WIRED_CT model 10 = CLAMP2000_30A, status=reserved.
+    # WIRED_CT model 11 = CLAMP2000_50A, status=reserved.
     with pytest.raises(RbAmpParamError) as ei:
-        dev.set_ct_model_ch(3, 10)
+        dev.set_ct_model_ch_force(3, 11)
     assert "RESERVED" in str(ei.value)
 
 
@@ -179,7 +184,7 @@ def test_client_rejects_unknown_row_client_side():
     m = _ui7_wired_ct()
     dev = RbAmp(m, addr=0x50); dev.begin()
     with pytest.raises(RbAmpParamError) as ei:
-        dev.set_ct_model_ch(3, 200)
+        dev.set_ct_model_ch_force(3, 200)
     assert "unknown" in str(ei.value).lower()
 
 
@@ -193,9 +198,10 @@ def test_registry_has_v145_wired_ct_expansion():
         assert "Clamp 2000:1" in desc
 
 
-def test_registry_reserved_wired_ct_10_11_13():
-    """Rows allocated but no preset: 10/11/13 for 30/50/100 A SKUs."""
-    for code in (10, 11, 13):
+def test_registry_reserved_wired_ct_11_13():
+    """Rows allocated but no preset: 11/13 for 50/100 A SKUs.
+    (10 = CLAMP2000_30A became characterized in the 2026-09-04 registry.)"""
+    for code in (11, 13):
         entry = SM.lookup(2, code)
         assert entry is not None
         assert entry[2] == "reserved"
@@ -241,7 +247,7 @@ def test_write_readback_confirms_ch4_ui7():
     m = _ui7_wired_ct()
     dev = RbAmp(m, addr=0x50); dev.begin()
     for code in (6, 7, 8, 9, 12):
-        dev.set_ct_model_ch(4, code)
+        dev.set_ct_model_ch_force(4, code)
         assert dev.read_ct_model_ch(4) == code, \
             "readback failed for code {}: got {}".format(code, dev.read_ct_model_ch(4))
 
@@ -250,9 +256,9 @@ def test_write_readback_confirms_ch0_flat_path():
     """Rule 6 also applies to the flat ch0-2 path (backward-compat verified)."""
     m = _ui3_wired_ct()
     dev = RbAmp(m, addr=0x50); dev.begin()
-    dev.set_ct_model_ch(0, 6)
-    dev.set_ct_model_ch(1, 7)
-    dev.set_ct_model_ch(2, 8)
+    dev.set_ct_model_ch_force(0, 6)
+    dev.set_ct_model_ch_force(1, 7)
+    dev.set_ct_model_ch_force(2, 8)
     assert dev.read_ct_model_ch(0) == 6
     assert dev.read_ct_model_ch(1) == 7
     assert dev.read_ct_model_ch(2) == 8
@@ -262,12 +268,12 @@ def test_mixed_channel_models_hold_independently_ui7():
     """ch3-6 each store distinct model bytes; a write to one leaves others alone."""
     m = _ui7_wired_ct()
     dev = RbAmp(m, addr=0x50); dev.begin()
-    dev.set_ct_model_ch(3, 6)
-    dev.set_ct_model_ch(4, 7)
-    dev.set_ct_model_ch(5, 8)
-    dev.set_ct_model_ch(6, 9)
+    dev.set_ct_model_ch_force(3, 6)
+    dev.set_ct_model_ch_force(4, 7)
+    dev.set_ct_model_ch_force(5, 8)
+    dev.set_ct_model_ch_force(6, 9)
     # Overwrite just ch4 — others should not budge.
-    dev.set_ct_model_ch(4, 12)
+    dev.set_ct_model_ch_force(4, 12)
     assert dev.read_ct_model_ch(3) == 6
     assert dev.read_ct_model_ch(4) == 12
     assert dev.read_ct_model_ch(5) == 8
@@ -283,7 +289,7 @@ def test_flat_path_still_uses_reg_cmd_wire_canon():
     m = _ui3_wired_ct()
     dev = RbAmp(m, addr=0x50); dev.begin()
     m.writes.clear()
-    dev.set_ct_model_ch(1, 7)  # WIRED_CT CLAMP2000_5A
+    dev.set_ct_model_ch_force(1, 7)  # WIRED_CT CLAMP2000_5A
 
     # Expect the legacy sequence in order: REG_CT_MODEL, CMD_SET_CT_MODEL_CH1.
     ct_writes = [w for w in m.writes if w[1] == R.REG_CT_MODEL]
@@ -311,7 +317,7 @@ def test_set_ct_model_ch_uses_save_user_config_not_save_gains_flat():
     m = _ui3_wired_ct()
     dev = RbAmp(m, addr=0x50); dev.begin()
     m.writes.clear()
-    dev.set_ct_model_ch(1, 7)
+    dev.set_ct_model_ch_force(1, 7)
     cmds = [w[2] for w in m.writes if w[1] == R.REG_COMMAND]
     assert R.CMD_SAVE_USER_CONFIG in cmds
     assert R.CMD_SAVE_GAINS not in cmds, \
@@ -323,7 +329,7 @@ def test_set_ct_model_ch_uses_save_user_config_not_save_gains_window():
     m = _ui7_wired_ct()
     dev = RbAmp(m, addr=0x50); dev.begin()
     m.writes.clear()
-    dev.set_ct_model_ch(5, 6)
+    dev.set_ct_model_ch_force(5, 6)
     cmds = [w[2] for w in m.writes if w[1] == R.REG_COMMAND]
     assert R.CMD_SAVE_USER_CONFIG in cmds
     assert R.CMD_SAVE_GAINS not in cmds
@@ -331,7 +337,8 @@ def test_set_ct_model_ch_uses_save_user_config_not_save_gains_window():
 
 def test_set_sensor_class_uses_save_user_config():
     """set_sensor_class also uses CMD_SAVE_USER_CONFIG."""
-    m = _ui3_wired_ct()
+    # Start from UNSET (not a paired class) so the class write proceeds.
+    m = MockBackend(slave_addr=0x50, channels=3, has_voltage=True)
     dev = RbAmp(m, addr=0x50); dev.begin()
     m.writes.clear()
     dev.set_sensor_class(RbAmpSensorClass.SCT_013)

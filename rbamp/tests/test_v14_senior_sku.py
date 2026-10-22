@@ -9,7 +9,7 @@ Covers:
   * fleet.aligned_snapshot() coherent latch + sweep (root A1/A2)
   * SAVE post-hoc wait-ready NACK-tolerance (root A3)
   * read_seq_digest() at REG_DIGEST + 1 (root A7)
-  * RbAmpSnapshot pad-to-max shape (Q4-b widening)
+  * RbAmpSnapshot pad-to-max shape (channel-count widening)
 """
 import struct
 import pytest
@@ -197,6 +197,73 @@ def test_read_all_ui7(mock_ui7):
     # ch 3..6 via window (seeded 1.0 + ch*0.1)
     for ch in (3, 4, 5, 6):
         assert snap.current[ch] == pytest.approx(1.0 + ch * 0.1, abs=1e-4)
+
+
+# ------------------------------------------------------------------
+# Period avg power + energy for ch3+ on senior SKUs (window field 13).
+# ch0-2 read flat regs; ch3..N-1 read the channel window — same coherent
+# latch. (Also the overflow guard: in an earlier revision, the fill ran off the fixed-3
+# avg_p → IndexError on UI5/UI7; now avg_p is sized to the channel count.)
+# ------------------------------------------------------------------
+
+def test_read_period_avg_power_ch3plus_via_window(mock_ui7):
+    """read_period_avg_power(ch) resolves ch3+ through window field 13 —
+    same path as read_period_avg_p (they are now one implementation)."""
+    dev = RbAmp(mock_ui7, addr=0x50)
+    dev.begin()
+    for ch in (3, 4, 5, 6):
+        mock_ui7.set_window_value(13, ch, 200.0 + ch * 10.0)
+        assert dev.read_period_avg_power(ch) == pytest.approx(200.0 + ch * 10.0, abs=1e-3)
+        # alias resolves identically
+        assert dev.read_period_avg_p(ch) == pytest.approx(200.0 + ch * 10.0, abs=1e-3)
+
+
+def test_period_snapshot_ui7_fills_all_channels(mock_ui7):
+    """read_period_snapshot() on a 7-ch module fills avg_p[0..6] (no IndexError)
+    — ch0-2 flat, ch3-6 via the window — and the trailing fields are intact."""
+    dev = RbAmp(mock_ui7, addr=0x50)
+    dev.begin()
+    for ch in range(3):
+        mock_ui7.set_period_avg(ch, 10.0 + ch)              # 10, 11, 12 W
+    for ch in (3, 4, 5, 6):
+        mock_ui7.set_window_value(13, ch, 100.0 + ch)       # 103..106 W
+
+    snap = dev.read_period_snapshot()                       # must NOT raise
+
+    assert snap.valid is True
+    assert len(snap.avg_p) == 7                             # sized to channels
+    for ch in range(3):
+        assert snap.avg_p[ch] == pytest.approx(10.0 + ch, abs=1e-3)
+    for ch in (3, 4, 5, 6):
+        assert snap.avg_p[ch] == pytest.approx(100.0 + ch, abs=1e-3)
+
+
+def test_period_snapshot_ui5_fills_all_channels(mock_ui5):
+    """Same on the 5-channel senior SKU — avg_p sized to 5, no overflow."""
+    dev = RbAmp(mock_ui5, addr=0x50)
+    dev.begin()
+    snap = dev.read_period_snapshot()                       # must NOT raise
+    assert snap.valid is True
+    assert len(snap.avg_p) == 5
+
+
+def test_period_energy_integrates_ch3plus_on_ui7(mock_ui7):
+    """Energy accumulator integrates every channel on a senior SKU, not just
+    ch0-2 — dev.energy.wh(ch) is non-zero for ch3-6 after a dt."""
+    dev = RbAmp(mock_ui7, addr=0x50)
+    dev.begin()
+    for ch in range(3):
+        mock_ui7.set_period_avg(ch, 100.0 + ch * 100.0)     # 100, 200, 300 W
+    for ch in (3, 4, 5, 6):
+        mock_ui7.set_window_value(13, ch, 100.0 + ch * 100.0)  # 400..700 W
+
+    dev.read_period_snapshot()                              # anchor the clock
+    mock_ui7.advance_ms(3_600_000)                          # +1 h
+    dev.read_period_snapshot()                              # integrate
+
+    # Each channel integrated P·dt/3600; 1 h → Wh ≈ P (settle adds ~0.05 s).
+    for ch in range(7):
+        assert dev.energy.wh(ch) == pytest.approx(100.0 + ch * 100.0, rel=1e-3)
 
 
 # ------------------------------------------------------------------

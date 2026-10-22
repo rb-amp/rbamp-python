@@ -57,6 +57,20 @@ from ._snapshot import (
     RbAmpParamError,
     RbAmpModeError,
     RbAmpVersionError,
+    RbAmpNotSupportedError,
+)
+from ._std import (
+    RbAmpStdEnergy,
+    RbAmpStdVoltage,
+    RbAmpStdChannel,
+    RbAmpStdConfig,
+    RbAmpStdHealth,
+    energy_delta as std_energy_delta,
+    phase_seq_name,
+    PHASE_SEQ_NA,
+    PHASE_SEQ_FORWARD,
+    PHASE_SEQ_REVERSE,
+    PHASE_SEQ_ABNORMAL,
 )
 from ._fleet import (
     RbAmpFleet,
@@ -70,9 +84,14 @@ from ._registers_v2 import (
     REGISTERS,
     COMMANDS,
 )
+from ._sct_rating import (
+    rating_correction as sct_rating_correction,
+    PRESET_G as SCT_PRESET_G,
+    RATING_C as SCT_RATING_C,
+)
 
 #: Package version (PEP 440). Library SemVer is independent of protocol SemVer.
-__version__ = "1.5.0"
+__version__ = "1.6.0"
 
 #: Re-exported for convenience — protocol version this library was built for.
 __protocol_version__ = RBAMP_PROTOCOL_VERSION
@@ -102,6 +121,21 @@ __all__ = (
     "RbAmpParamError",
     "RbAmpModeError",
     "RbAmpVersionError",
+    "RbAmpNotSupportedError",
+    "RbAmpStdEnergy",
+    "RbAmpStdVoltage",
+    "RbAmpStdChannel",
+    "RbAmpStdConfig",
+    "RbAmpStdHealth",
+    "std_energy_delta",
+    "sct_rating_correction",
+    "SCT_PRESET_G",
+    "SCT_RATING_C",
+    "phase_seq_name",
+    "PHASE_SEQ_NA",
+    "PHASE_SEQ_FORWARD",
+    "PHASE_SEQ_REVERSE",
+    "PHASE_SEQ_ABNORMAL",
     "RBAMP_REG_SCHEMA_CRC32",
     "RBAMP_PROTOCOL_VERSION",
     "REGISTERS",

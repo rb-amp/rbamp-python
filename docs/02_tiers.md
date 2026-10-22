@@ -16,8 +16,8 @@ values the module returns and in how the firmware behavior interprets the data
 
 ## Current State
 
-In the current rbAmp firmware, **only the BASIC** tier is implemented and shipped.
-STANDARD and PRO are on the roadmap and not implemented.
+BASIC and STANDARD modules are supported by this library (STANDARD from 1.6.0).
+PRO is not implemented.
 
 | Tier | Shipping |
 |---|---|
@@ -77,8 +77,6 @@ def bidirectional_loop(dev):
         # Sample RT power at 5 Hz — matches the firmware-commit
         # cadence (200 ms per channel). Faster yields empty repeated
         # reads; slower loses resolution on sharp load transitions.
-        # ±2 % accuracy is achievable for typical mixed loads with
-        # an inverter.
         time.sleep(0.2)
 
         t_now = time.monotonic()
@@ -170,7 +168,7 @@ voltage_hw = dev.has_voltage_hw
 channels = dev.channels
 
 # Full SKU — variant byte from REG_HW_VARIANT (0x55)
-# 1=UI1, 2=UI2, 3=UI3 (roadmap), 4=I1, 5=I2, 6=I3
+# 1=UI1, 2=UI2, 3=UI3, 4=I1, 5=I2, 6=I3
 variant = dev.hw_variant
 ```
 

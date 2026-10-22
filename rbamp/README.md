@@ -68,6 +68,19 @@ with RbAmp(i2c, 0x50) as dev:
 - **Per-channel sensor configuration** via `dev.set_ct_model_ch(channel,
   code)` and `dev.read_ct_model_ch(channel)` — works on all channels
   of the senior SKUs (UI5, UI7).
+- **On-device energy metering** for modules that keep their own
+  life-time counters: `dev.read_std_energy()` returns active import /
+  export / net and reactive energy, at Wh, mWh and µWh / µvarh
+  resolution, plus per-channel figures; `RbAmp.std_energy_delta(prev,
+  now)` gives the energy used between two readings (power-cut-safe).
+- **Multi-phase helpers** where the module provides them:
+  `dev.read_voltage_angle(phase)` (degrees between voltage inputs),
+  `dev.read_phase_sequence()` (forward / reverse / abnormal),
+  `dev.read_reactive(ch)` / `dev.read_apparent(ch)`.
+- **Energy starting current** — `dev.get_start_current()` /
+  `dev.set_start_current(µA)`: below this per-channel current the module
+  counts no energy (readings are unaffected), so no-load noise never
+  creeps into the counters.
 - **Per-channel Wh accumulator** updated automatically on each
   successful period snapshot.
 - **Pythonic API** — properties (`dev.voltage`, `dev.power[0]`),
@@ -92,6 +105,13 @@ top-level README for the current URL.
   bus; MicroPython on ESP32, RP2040, STM32, and Pyboard ports.
   CircuitPython is not supported directly (its `busio.I2C` is a
   different type — wrap it with an adapter or use the raw protocol).
+- **On-device energy / angle / starting-current features** are
+  detected automatically and are validated on **CPython (`smbus2`)**.
+  The same calls work over MicroPython `machine.I2C` but that path is
+  not yet hardware-validated — prefer CPython for these on-device
+  features until a release note says otherwise. The common readings
+  (`dev.voltage`, `dev.current[ch]`, `dev.power[ch]`, period snapshots)
+  work on every supported host regardless.
 
 ## License
 

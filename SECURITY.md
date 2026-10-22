@@ -37,4 +37,3 @@ We publicly thank security researchers who responsibly disclose issues. Your nam
 
 ---
 
-Encrypted email preferred. PGP key (rotation 2026-Q3): _coming soon_

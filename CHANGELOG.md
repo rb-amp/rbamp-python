@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.6.0] — 2026-10-22
+
+> Public releases resume with this version; intermediate versions (1.4.x, 1.5.x) were released internally only.
+
+Adds the STD module line (16-bit register map) alongside the existing modules, per-channel period energy on 5/7-channel modules, and an SCT-013 rating-switch correction. One `RbAmp` class serves both module lines; the module type is detected automatically at `begin()`.
+
+### Added
+- STD module line (16-bit map), auto-detected. Common readers (`voltage`, `current`, `power`, `power_factor`, `frequency`) work on every module; STD-only calls raise `RbAmpNotSupportedError` on a module that does not provide them.
+  - On-device energy: `dev.read_std_energy()` (active import/export/net + reactive, Wh/mWh/µWh, per-channel); `RbAmp.std_energy_delta(prev, now)` (power-cut-safe).
+  - Multi-phase: `dev.read_voltage_angle(phase)`, `dev.read_phase_sequence()`, `dev.read_reactive(ch)`, `dev.read_apparent(ch)`.
+  - Starting current: `dev.get_start_current()` / `dev.set_start_current(µA)` + `dev.save_config()`.
+  - `dev.read_std_voltage/channel/totals/config/health()`, `dev.set_time()`, `dev.is_std`; value objects `RbAmpStdEnergy/Voltage/Channel/Config/Health`; `RbAmpNotSupportedError`.
+  - Validated on CPython (`smbus2`); the MicroPython 16-bit path is implemented but not yet hardware-validated.
+- Per-channel period energy on 5/7-channel modules: `dev.read_period_avg_power(ch)` resolves every channel; the period snapshot and the Wh accumulator cover all channels.
+- SCT-013 rating-switch correction: when a channel is switched to a different sensor model, current/power/energy are corrected to the selected model relative to the gain the module applies; power factor and voltage unchanged. Automatic; `dev.set_rating_correction()`, `dev.ct_rating_scale(ch)`, `dev.ct_rating_status(ch)`. Firmware that performs this itself is detected and left alone.
+- Read-before-write guard on sensor-class / CT-model writes; `dev.set_ct_model_ch_force()`, `dev.read_sensor_class()`.
+
+### Fixed
+- Period snapshot on 5/7-channel modules no longer errored on channels beyond the third.
+
 ## [1.5.0] — 2026-09-04
 
 Per-channel CT-model assignment for all channels, senior-SKU support (UI5/UI7),

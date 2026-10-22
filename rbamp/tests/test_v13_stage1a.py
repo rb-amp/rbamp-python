@@ -1,7 +1,7 @@
 """Stage 1A v1.3 fixes — wire-protocol + L9 energy + per-quantity sanity.
 
-Bug refs from rbamp-dev.docs cross-lib parity audit (baton 18:30Z 2026-06-14)
-and rbamp-dev.root seed v1.3 (2026-06-16 L9 anti-revert callout):
+Bug refs from the cross-library parity audit (2026-06-14)
+and the v1.3 seed (2026-06-16 L9 anti-revert callout):
 
 - #1: CT model order — canonical REG_CT_MODEL=code → CMD_SET_CT_MODEL_CHn →
        5 ms settle → CMD_SAVE_GAINS (was CMD→REG→SAVE in v1.1, broken).
