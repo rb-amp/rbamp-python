@@ -966,7 +966,7 @@ class RbAmp:
 
         (v1.5.0: persist opcode is ``CMD_SAVE_USER_CONFIG`` in both paths.
         Prior draft used ``CMD_SAVE_GAINS`` which is factory-gated in
-        production and silently no-ops user persist — root audit 2026-09-04.)
+        production and silently no-ops user persist.)
 
         **Multi-channel call order** (v1.4+): order-INDEPENDENT.
 
@@ -1264,8 +1264,8 @@ class RbAmp:
     def save_gains(self):
         """Issue CMD_SAVE_GAINS, wait 700 ms, then post-hoc wait-ready.
 
-        v1.5.0 IMPORTANT (root audit 2026-09-04): ``CMD_SAVE_GAINS`` is
-        DEVELOP-GATED in production firmware — factory tooling can invoke
+        v1.5.0 IMPORTANT: ``CMD_SAVE_GAINS`` is
+        factory-gated in production firmware — factory tooling can invoke
         it, end-user firmware silently blocks. Do NOT use to persist user
         config (CT_MODEL, SENSOR_CLASS, GROUP_ID, LABEL); use
         :meth:`_save_user_config` for those. Kept here for factory / gain-

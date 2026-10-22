@@ -303,7 +303,7 @@ def test_flat_path_still_uses_reg_cmd_wire_canon():
 
 
 # ---------------------------------------------------------------------------
-# Persist-opcode anti-regression (root audit 2026-09-04, bus 14:50Z)
+# Persist-opcode anti-regression
 # ---------------------------------------------------------------------------
 
 def test_set_ct_model_ch_uses_save_user_config_not_save_gains_flat():

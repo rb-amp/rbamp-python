@@ -17,7 +17,7 @@ under-counts ~26-27% (HW-validated on every sister library bench, due
 to timer-ISR starvation in the module firmware). A previous revision
 wrongly used chip period_ms; reversed mid-2026. **Future porters: do
 NOT revert to chip-period — the accumulator is clock-agnostic and the
-master wall-clock is the billing dt.** ``RbAmpPeriodSnapshot.latch_ms``
+master wall-clock is the energy-integration dt.** ``RbAmpPeriodSnapshot.latch_ms``
 exists in the snapshot for diagnostics only.
 
 CPython uses 64-bit float natively; MicroPython on ESP32 also uses 64-bit
