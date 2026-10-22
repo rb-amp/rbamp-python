@@ -43,7 +43,7 @@ Within the SCT-013 family, seven models are supported (codes
 >
 > Per-class accepted sets:
 > - `RbAmpSensorClass.SCT_013` → `{1, 2, 3, 4, 5, 6, 7}`
-> - `RbAmpSensorClass.WIRED_CT` → `{1, 2, 3}` (factory preset slots)
+> - `RbAmpSensorClass.WIRED_CT` → `{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12}` (factory-paired clamp series; codes 11 and 13 are not available)
 > - `RbAmpSensorClass.BUILTIN_CT` → `∅` (onboard CT, no codes)
 >
 > Codes `0x06` and `0x07` are non-monotonic by rating (added after the
