@@ -40,10 +40,11 @@ bus, poll all modules in one call, get total power and the
 "feed − Σ(consumers)" balance, catch errors on each module, and, when
 needed, synchronize period snapshots with a broadcast command.
 
-**Multi-channel** modules are also supported (`I2`, `I3` — two or
-three CTs on one module, each with its own sensor model). This is
-typical for a sub-panel, where a single installation point monitors
-several feeders.
+**Multi-channel** modules are also supported — the current-only `I2` /
+`I3` (two or three CTs) and the voltage-equipped `UI2` / `UI3` / `UI5` /
+`UI7` (2 / 3 / 5 / 7 current channels, with power, PF and Wh per channel).
+Each channel has its own sensor model. This is typical for a sub-panel,
+where a single installation point monitors several feeders.
 
 Working with a **single** module is the minimal case of the same
 library: the `RbAmp` class is the building block on which
@@ -56,6 +57,7 @@ that same handle directly — the fleet API is not needed.
 
 - 1 module at the feed (mains) — total consumption and grid quality.
 - N modules on individual loads — per-channel metering.
+- Multi-channel modules fit this case too: one `UI2` / `UI3` / `UI5` / `UI7` (or `I2` / `I3`) can meter several loads, each on its own channel — N modules do not have to mean N loads.
 - A single `fleet.poll_all()` call polls everything; the balance
   `mains − Σ(sub_loads)` shows "the rest" (background consumption,
   unmetered loads, leakage).
@@ -68,7 +70,8 @@ that same handle directly — the fleet API is not needed.
 > UI-variants** (which have a voltage front-end). In the canonical
 > deployment, the "mains-meter" role (metering energy) is played by a
 > single **UI1** at the mains feed; the sub-meter role (per-load
-> current detail) is played by **I2**/**I3** modules.
+> current detail) is played by **I2**/**I3** modules (or by **UI2** / **UI3** / **UI5** /
+> **UI7** when power and Wh are needed per load).
 
 For details, see chapter **06 · Examples**, scenario 1
 ("Mains + N sub-loads — the 80% canon"). For the API, see chapter
