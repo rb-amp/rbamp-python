@@ -91,7 +91,7 @@ The package ships 10 runnable examples for CPython and 10 for MicroPython:
 
 File names are the real ones; the numbering differs between the two folders.
 
-See [`rbamp/examples_cpython/`](rbamp/examples_cpython/) and [`rbamp/examples_upy/`](rbamp/examples_upy/).
+See [`rbamp/examples_cpython/`](rbamp/examples_cpython/) and [`rbamp/examples_upy/`](rbamp/examples_upy/). A walkthrough of each: [06 · Examples](docs/06_examples.md).
 
 ## Several modules: `RbAmpFleet`
 
@@ -116,6 +116,24 @@ print(f"total: {fleet.total_power():.1f} W, {fleet.total_energy_wh():.3f} Wh")
 ## Documentation
 
 Full user documentation: https://www.rbamp.com/docs/modules-basic-standard-python-overview
+
+The same chapters are in this repository, in [`docs/`](docs/):
+
+| Chapter | What it covers |
+|---|---|
+| [01 · Overview](docs/01_overview.md) | what rbAmp is, what the package does, architecture |
+| [02 · Module lines](docs/02_tiers.md) | BASIC and STANDARD (STD) modules and how the package detects them |
+| [03 · Sensor selection](docs/03_sensor_selection.md) | choosing an SCT-013 clamp and its model code |
+| [04 · Hardware](docs/04_hardware.md) | wiring for Raspberry Pi, MicroPython boards, addressing, multi-module bus |
+| [05 · Quickstart](docs/05_quickstart.md) | first working script step by step |
+| [06 · Examples](docs/06_examples.md) | walkthrough of the CPython and MicroPython examples |
+| [07 · DIY integrations](docs/07_diy_integrations.md) | Home Assistant, MQTT and other self-hosted setups |
+| [08 · Cloud integrations](docs/08_cloud_integrations.md) | cloud services and time-series databases |
+| [09 · API reference](docs/09_api_reference.md) | every public class and method |
+| [10 · Troubleshooting](docs/10_troubleshooting.md) | common problems and how to work through them |
+| [11 · Changelog](docs/11_changelog.md) | package release history |
+
+Register-level (native) protocol documentation, for integrations without this library: [rbamp-docs](https://github.com/rb-amp/rbamp-docs).
 
 ## License
 
