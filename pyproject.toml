@@ -9,7 +9,7 @@ description = "Client library for the rbAmp I2C AC sensor / dimmer module (CPyth
 readme = "rbamp/README.md"
 license = {text = "MIT"}
 authors = [
-    {name = "rbAmp team", email = "dev@rbamp.local"},
+    {name = "rbAmp team", email = "info@rbamp.com"},
 ]
 keywords = [
     "rbamp",
