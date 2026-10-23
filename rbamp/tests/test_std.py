@@ -112,7 +112,7 @@ CAPS_FULL = (S.CAP_ADDR16 | S.CAP_MULTI_CHANNEL | S.CAP_REACTIVE | S.CAP_THD
              | S.CAP_ONDEVICE_ENERGY | S.CAP_ENERGY_UWH)
 
 
-def _u3i3(caps=CAPS_FULL, fw=0x0001007B, map_version=0x36):
+def _three_phase(caps=CAPS_FULL, fw=0x0001007B, map_version=0x36):
     m = StdMockBackend()
     m.set_identity(map_version, caps, 0x07, n_voltage=3, n_current=3,
                    variant=S.VARIANT_3PH_3CH)
@@ -188,7 +188,7 @@ def _dev(m):
 # ---------------------------------------------------------------------------
 
 def test_discovery_sets_std():
-    d = _dev(_u3i3())
+    d = _dev(_three_phase())
     assert d.is_std is True
     assert d.channels == 3
     assert d.has_voltage_hw is True
@@ -204,7 +204,7 @@ def test_basic_module_not_std():
 
 
 def test_std_magic_bad_version_raises():
-    m = _u3i3()
+    m = _three_phase()
     m.set_u8(S.REG_VERSION, 0x2F)  # below 0x30
     with pytest.raises(Exception):
         RbAmp(m, addr=0x50).begin()
@@ -215,7 +215,7 @@ def test_std_magic_bad_version_raises():
 # ---------------------------------------------------------------------------
 
 def test_common_readers():
-    d = _dev(_u3i3())
+    d = _dev(_three_phase())
     assert d.read_voltage(0) == pytest.approx(230.0)
     assert d.read_voltage(2) == pytest.approx(230.0)
     assert d.read_current(0) == pytest.approx(5.0)
@@ -226,13 +226,13 @@ def test_common_readers():
 
 
 def test_reactive_apparent():
-    d = _dev(_u3i3())
+    d = _dev(_three_phase())
     assert d.read_reactive(0) == pytest.approx(200.0)
     assert d.read_apparent(0) == pytest.approx(1150.0)
 
 
 def test_voltage_out_of_range():
-    d = _dev(_u3i3())
+    d = _dev(_three_phase())
     with pytest.raises(RbAmpParamError):
         d.read_voltage(3)
     with pytest.raises(RbAmpParamError):
@@ -244,7 +244,7 @@ def test_voltage_out_of_range():
 # ---------------------------------------------------------------------------
 
 def test_voltage_angle():
-    d = _dev(_u3i3())
+    d = _dev(_three_phase())
     deg0, valid0 = d.read_voltage_angle(0)
     assert valid0 is True and deg0 == pytest.approx(0.0)
     deg1, valid1 = d.read_voltage_angle(1)
@@ -253,13 +253,13 @@ def test_voltage_angle():
 
 def test_angle_none_and_old_fw():
     # ANGLE sentinel 0x8000 → not valid
-    m = _u3i3()
+    m = _three_phase()
     m.set_i16(S.VOLTAGE(1) + S.VOLTAGE_ANGLE, -0x8000)
     d = _dev(m)
     deg, valid = d.read_voltage_angle(1)
     assert valid is False and deg == 0.0
     # firmware < 0x7A → angle never valid, phase_seq NotSupported
-    d2 = _dev(_u3i3(fw=0x00010079))
+    d2 = _dev(_three_phase(fw=0x00010079))
     _deg, valid2 = d2.read_voltage_angle(1)
     assert valid2 is False
     with pytest.raises(RbAmpNotSupportedError):
@@ -267,7 +267,7 @@ def test_angle_none_and_old_fw():
 
 
 def test_phase_sequence():
-    d = _dev(_u3i3())
+    d = _dev(_three_phase())
     assert d.read_phase_sequence() == std.PHASE_SEQ_FORWARD
     assert std.phase_seq_name(d.read_phase_sequence()) == "forward"
 
@@ -277,7 +277,7 @@ def test_phase_sequence():
 # ---------------------------------------------------------------------------
 
 def test_energy_fine():
-    d = _dev(_u3i3())
+    d = _dev(_three_phase())
     e = d.read_std_energy()
     assert e.act_import_wh == 12345
     assert e.act_export_wh == 10
@@ -298,7 +298,7 @@ def test_energy_fine():
 def test_energy_coarse_when_no_uwh_cap():
     # CAP_ENERGY_UWH clear → fine False, µWh scaled from mWh (×1000)
     caps = CAPS_FULL & ~S.CAP_ENERGY_UWH
-    d = _dev(_u3i3(caps=caps))
+    d = _dev(_three_phase(caps=caps))
     e = d.read_std_energy()
     assert e.fine is False
     assert e.fine_reactive is False
@@ -309,7 +309,7 @@ def test_energy_coarse_when_no_uwh_cap():
 
 def test_energy_reactive_coarse_below_7b():
     # fw 0x7A: active µWh fine, reactive µvarh still coarse (varh × 1e6)
-    d = _dev(_u3i3(fw=0x0001007A))
+    d = _dev(_three_phase(fw=0x0001007A))
     e = d.read_std_energy()
     assert e.fine is True
     assert e.fine_reactive is False
@@ -318,13 +318,13 @@ def test_energy_reactive_coarse_below_7b():
 
 def test_energy_not_supported_without_cap():
     caps = CAPS_FULL & ~S.CAP_ONDEVICE_ENERGY
-    d = _dev(_u3i3(caps=caps))
+    d = _dev(_three_phase(caps=caps))
     with pytest.raises(RbAmpNotSupportedError):
         d.read_std_energy()
 
 
 def test_energy_delta_via_dev():
-    d = _dev(_u3i3())
+    d = _dev(_three_phase())
     e0 = d.read_std_energy()
     m = d.std._io
     m.set_i64(S.ENERGY_BASE + S.ENERGY_E_ACT_IMP, 12_445)   # +100 Wh
@@ -340,7 +340,7 @@ def test_energy_delta_via_dev():
 # ---------------------------------------------------------------------------
 
 def test_read_config():
-    d = _dev(_u3i3())
+    d = _dev(_three_phase())
     cfg = d.read_std_config()
     assert cfg.sensor_class == 1
     assert cfg.ct_model == 3
@@ -351,7 +351,7 @@ def test_read_config():
 
 
 def test_start_current_get_set():
-    d = _dev(_u3i3())
+    d = _dev(_three_phase())
     assert d.get_start_current() == 400
     d.set_start_current(250)
     assert d.get_start_current() == 250
@@ -360,7 +360,7 @@ def test_start_current_get_set():
 
 
 def test_start_current_invalid_no_write():
-    d = _dev(_u3i3())
+    d = _dev(_three_phase())
     m = d.std._io
     before = len(m.writes)
     with pytest.raises(RbAmpParamError):
@@ -371,7 +371,7 @@ def test_start_current_invalid_no_write():
 
 
 def test_start_current_unsupported_below_7b():
-    d = _dev(_u3i3(fw=0x0001007A))
+    d = _dev(_three_phase(fw=0x0001007A))
     with pytest.raises(RbAmpNotSupportedError):
         d.get_start_current()
     with pytest.raises(RbAmpNotSupportedError):
@@ -385,13 +385,13 @@ def test_start_current_unsupported_below_7b():
 # ---------------------------------------------------------------------------
 
 def test_set_time_ok():
-    d = _dev(_u3i3())
+    d = _dev(_three_phase())
     d.set_time(1_700_000_000)  # 2023
     assert d.std._io.mem.get(S.REG_STATUS, 0) & S.ST_TIME_VALID
 
 
 def test_set_time_rejects_pre_2020():
-    d = _dev(_u3i3())
+    d = _dev(_three_phase())
     with pytest.raises(RbAmpParamError):
         d.set_time(100)
 
@@ -401,7 +401,7 @@ def test_set_time_rejects_pre_2020():
 # ---------------------------------------------------------------------------
 
 def test_read_health():
-    d = _dev(_u3i3())
+    d = _dev(_three_phase())
     h = d.read_std_health()
     assert h.cal_ok is True
     assert h.sensor_ok is True
@@ -434,7 +434,7 @@ def test_std_only_methods_raise_on_basic():
 # ---------------------------------------------------------------------------
 
 def test_energy_block_reads_are_coherent():
-    d = _dev(_u3i3())
+    d = _dev(_three_phase())
     m = d.std._io
     m.reads.clear()
     d.read_std_energy()
