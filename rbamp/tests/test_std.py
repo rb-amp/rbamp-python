@@ -105,7 +105,7 @@ class StdMockBackend:
 
 
 # ---------------------------------------------------------------------------
-# Golden U3I3 fixture (map 0x36, fw 0x7B, full energy)
+# Golden three-phase (3PH_3CH) fixture (map 0x36, fw 0x7B, full energy)
 # ---------------------------------------------------------------------------
 
 CAPS_FULL = (S.CAP_ADDR16 | S.CAP_MULTI_CHANNEL | S.CAP_REACTIVE | S.CAP_THD
@@ -115,7 +115,7 @@ CAPS_FULL = (S.CAP_ADDR16 | S.CAP_MULTI_CHANNEL | S.CAP_REACTIVE | S.CAP_THD
 def _u3i3(caps=CAPS_FULL, fw=0x0001007B, map_version=0x36):
     m = StdMockBackend()
     m.set_identity(map_version, caps, 0x07, n_voltage=3, n_current=3,
-                   variant=S.VARIANT_U3I3)
+                   variant=S.VARIANT_3PH_3CH)
     m.set_u32(S.REG_FW_VER, fw)
     m.set_u16(S.REG_FREQ, 5000)        # 50.00 Hz
     m.set_u8(S.REG_PHASE_SEQ, 1)       # forward
