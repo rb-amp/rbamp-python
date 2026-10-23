@@ -312,7 +312,7 @@ with RbAmp(i2c, 0x50) as dev:
 
 What `read_period_snapshot()` does under the hood:
 
-1. Sends the module the period-latch command (`CMD_LATCH_PERIOD`).
+1. Sends the module the period-snapshot command (`CMD_LATCH_PERIOD`).
 2. Waits 50 ms while the module prepares the snapshot.
 3. Checks the ready flag (`snap.valid`); reads the average/peak
    power.

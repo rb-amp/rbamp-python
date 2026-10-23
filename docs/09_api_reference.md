@@ -2,7 +2,7 @@
 
 ![Register map of the module: the page-0 address space from 0x00 to 0xFF](images/api-register-map.png)
 
-![Atomic period latch: one write closes the current period and opens the next](images/period-atomic-latch.png)
+![Atomic period snapshot: one write closes the current period and opens the next](images/period-atomic-latch.png)
 
 The complete public API of the `rbamp` package. Source —
 [`__init__.py`](https://github.com/rb-amp/rbamp-python) (re-exports),
@@ -197,8 +197,8 @@ class RbAmpPeriodSnapshot:
     avg_p:        list   # [ch0, ch1, ...] — average P over the period, W (all channels)
     max_p:        float  # peak instantaneous power on channel 0
     latch_ms:     int    # period duration (device's view)
-    master_dt_ms: int    # master wall-clock dt since the last latch
-    valid:        bool   # True if the latch-ready flag was set
+    master_dt_ms: int    # master wall-clock dt since the last snapshot
+    valid:        bool   # True if the snapshot-ready flag was set
 ```
 
 > For energy integration, use `master_dt_ms`, not `latch_ms` — `latch_ms`
@@ -234,7 +234,7 @@ traffic is generated until `begin()`.
 ### `dev.begin()`
 
 Probes the device + detects the module line + caches topology + primes
-the LATCH.
+the snapshot command.
 
 **Module-line detection (1.6.0).** `begin()` first checks whether the
 module is an STD module (16-bit register map). If it is, the handle
@@ -547,12 +547,12 @@ whole sequence.
 
 ### `dev.is_period_valid() -> bool`
 
-Reads the latch-ready bit. Returns `True` if the last snapshot is
+Reads the snapshot-ready bit. Returns `True` if the last snapshot is
 fresh.
 
 ### `dev.read_period_avg_power(ch=0) -> float`
 
-Average active power on a channel over the latched period. Must be
+Average active power on a channel over the closed period. Must be
 called after `latch_period()` + a 50 ms settle + a valid check.
 
 Resolves **every** channel of the module (`ch = 0..channels-1`), including
@@ -562,7 +562,7 @@ is an alias with the same behaviour.
 
 ### `dev.read_period_max_power() -> float`
 
-Peak instantaneous power on channel 0 over the latched period.
+Peak instantaneous power on channel 0 over the closed period.
 `ch=0` only on v1 firmware.
 
 ### `dev.read_period_latch_ms() -> int`
@@ -578,12 +578,12 @@ Period duration from the **device's** perspective, in ms.
 **The recommended entry point** for period accounting. The full
 sequence under the hood:
 
-1. If `skip_latch=True` — skip the LATCH write (for the
-   multi-module pattern after a manual series of LATCH commands).
+1. If `skip_latch=True` — skip the snapshot command write (for the
+   multi-module pattern after a manual series of snapshot commands).
 2. Otherwise — write `CMD_LATCH_PERIOD`.
 3. Capture `time.monotonic()` to compute `master_dt_ms`.
 4. `time.sleep(settle_ms / 1000)` — 50 ms by default.
-5. Check the latch-ready flag. If 0 — raise
+5. Check the snapshot-ready flag. If 0 — raise
    `RbAmpStaleError` (the previous timestamp is kept, so the next
    successful snapshot covers the full interval and Wh stays exact).
 6. Read `avg_p[0..channels-1]` + `max_p` + `latch_ms`.
@@ -592,8 +592,8 @@ sequence under the hood:
 
 | Parameter | Description |
 |---|---|
-| `settle_ms` | Wait after LATCH, in ms. Default 50. |
-| `skip_latch` | If `True` — do not write LATCH, only read. |
+| `settle_ms` | Wait after the snapshot command, in ms. Default 50. |
+| `skip_latch` | If `True` — do not send the snapshot command, only read. |
 
 **Raises**: `RbAmpStaleError` (snapshot stale); `RbAmpIOError`
 (bus failure).
@@ -613,7 +613,7 @@ async for snap in dev.stream_period(interval_s=60.0):
 
 | Parameter | Description |
 |---|---|
-| `interval_s` | Period between latches (≥ 30 s recommended) |
+| `interval_s` | Period between snapshots (≥ 30 s recommended) |
 | `skip_stale` | `True` (default) — stale snapshots are skipped automatically. `False` — they are yielded with `snap.valid=False`, and your code must check `if not snap.valid: continue` itself |
 
 > ⚠ **CPython: blocks the event loop.** Under the hood,
@@ -1167,7 +1167,7 @@ mirror.
 The `RbAmpFleet` class is the main high-level surface of the v1.3
 package. It manages a collection of modules on a shared I²C bus:
 discovery, provisioning, poll aggregation, error aggregation,
-synchronous latches via a General-Call broadcast.
+synchronous snapshots via a General-Call broadcast.
 
 One fleet is bound to one bus (usually `SMBus(1)` on CPython or
 `I2C(0, ...)` on MicroPython). The soft cap on the module count is
@@ -1241,12 +1241,12 @@ mains module.
 
 ### `fleet.aligned_snapshot(group=0) -> list[dict]`
 
-Fleet-wide coherent period latch across **all channels** of every
-member: broadcasts a General-Call latch, then reads each in-sync member's
-latched average power for every channel (`read_period_avg_p`). Returns one
+Fleet-wide coherent period snapshot across **all channels** of every
+member: broadcasts a General-Call snapshot, then reads each in-sync member's
+snapshot average power for every channel (`read_period_avg_p`). Returns one
 dict per member, in fleet order, with keys `addr`, `in_sync`,
 `period_valid`, `avg_p` (list, one entry per channel; `None` if the member
-missed the tick or did not answer). The latch aligns the period averages
+missed the tick or did not answer). The snapshot aligns the period averages
 only — live readings (`I`, `P`, `PF`) cannot be aligned across channels.
 
 ### Addressing and conflict checking
@@ -1286,7 +1286,7 @@ fleet.check_sync(expected_tick: int) -> list[RbAmpFleetSync]
 ```
 
 For tight snapshot synchronization (skew < 1 ms across the
-whole fleet), an I²C General-Call broadcast latch is used.
+whole fleet), an I²C General-Call broadcast snapshot is used.
 
 1. `enable_gc_all(group)` sets the `GC_ENABLE` flag of FLEET_CONFIG +
    `GROUP_ID` on all fleet modules, issues `CMD_SAVE_USER_CONFIG`
@@ -1315,7 +1315,7 @@ These methods work with a **single** module directly (without a fleet).
 ### `dev.enable_gc(enable: bool = True) -> None`
 
 `enable_gc(True)` writes `1` into the `GC_ENABLE` flag of FLEET_CONFIG (0x27) + saves
-to flash + resets — the module will start accepting GC latches after
+to flash + resets — the module will start accepting GC snapshots after
 boot. `enable_gc(False)` clears the bit symmetrically. **Blocks for
 ~1 second** (SAVE_USER_CONFIG settle + reset settle). Idempotent:
 a no-op if the current state already matches the requested one.
@@ -1350,7 +1350,7 @@ A static method. A **legacy wrapper** — equivalent to
 the explicit `broadcast_latch_group` form with its own tick for
 witness verification is preferred.
 
-> **Precondition**: the General-Call latch capability
+> **Precondition**: the General-Call snapshot capability
 > (`CAP_GC_LATCH`, reported by `REG_CAPABILITY`) must be set on the firmware **and** GC
 > must be **enabled** on each module (`dev.enable_gc(True)` or
 > `fleet.enable_gc_all()` flips the `GC_ENABLE` flag of FLEET_CONFIG, default OFF).
@@ -1359,7 +1359,7 @@ witness verification is preferred.
 > bus. If GC is disabled across the whole fleet, the bus rejects
 > the GC frame at the NACK level; this is **detectable**, not a
 > silent drop. On a legacy module without `CAP_GC_LATCH`, the
-> wrapper falls back to a sequential per-device latch.
+> wrapper falls back to a sequential per-device snapshot.
 
 ## Diagnostics
 
@@ -1494,7 +1494,7 @@ The authoritative SKU byte is `REG_HW_VARIANT (0x55)` (`dev.hw_variant`):
 | `0x05` | I2 |
 | `0x06` | I3 |
 
-### General-Call broadcast latch
+### General-Call broadcast snapshot
 
 **Opt-in per-module** via the `GC_ENABLE` flag of `REG_FLEET_CONFIG`. **Default OFF**. Enabled via `CMD_SAVE_USER_CONFIG` + `CMD_RESET`. After the reset, the module listens for the broadcast frame on addr `0x00`:
 
@@ -1509,7 +1509,7 @@ addr=0x00 | A5 27 <group> <tick_lo> <tick_hi>
 **Failure mode detection (2-level, C.10 HW-confirmed)**:
 
 1. **GC-address NACK**: if GC is disabled across the whole fleet, `bus.write_i2c_block_data(0x00, ...)` raises `OSError` (or the backend equivalent). This is a **hard error**, not a silent drop.
-2. **Per-module witness**: if no NACK occurred, read `REG_PERIOD_VALID (0x07)` on each module. `1`=latch succeeded; `0`=GC disabled on that module or the period is empty.
+2. **Per-module witness**: if no NACK occurred, read `REG_PERIOD_VALID (0x07)` on each module. `1`=snapshot succeeded; `0`=GC disabled on that module or the period is empty.
 
 ### Error model (v1.3)
 

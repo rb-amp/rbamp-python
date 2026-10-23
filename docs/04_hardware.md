@@ -263,16 +263,16 @@ At 50 kHz, a single read transaction ≈ 200-400 µs. A full RT block for one ch
 
 #### Period sync — synchronizing the periods
 
-For tariff metering, all modules must latch the **same** interval.
+For tariff metering, all modules must snapshot the **same** interval.
 
-![One broadcast command makes all modules latch their period at the same instant.](images/period-broadcast-latch.png)
+![One broadcast command makes all modules take their period snapshot at the same instant.](images/period-broadcast-latch.png)
 
-**Strategy 1 — sequential latch + common settle** (any firmware):
+**Strategy 1 — sequential snapshot + common settle** (any firmware):
 
 ```python
 import time
 
-# Phase 1: sequential latch
+# Phase 1: sequential snapshot
 for m in meters:
     m.latch_period()
 
@@ -283,11 +283,11 @@ time.sleep(0.050)
 snaps = [m.read_period_snapshot(skip_latch=True) for m in meters]
 ```
 
-Skew: 16 modules × ~1 ms/latch = ~16 ms relative to a 60-s period = 0.027%. Negligible for typical monitoring.
+Skew: 16 modules × ~1 ms/snapshot = ~16 ms relative to a 60-s period = 0.027%. Negligible for typical monitoring.
 
-**Strategy 2 — General-Call broadcast latch** (requires enabling on each module):
+**Strategy 2 — General-Call broadcast snapshot** (requires enabling on each module):
 
-All modules latch on a single I²C frame at addr `0x00`:
+All modules take their snapshot on a single I²C frame at addr `0x00`:
 
 ```
 addr=0x00 | A5 27 <group> <tick_lo> <tick_hi>   (5 bytes)
@@ -308,7 +308,7 @@ Witness: for each expected slave, read `REG_PERIOD_VALID (0x07)`. `!=1` → fall
 `REG_GROUP_ID (0x28)` lets you have several GC domains on one bus:
 
 - `group = 0x00` → all-call.
-- `group = N` → only modules with `REG_GROUP_ID = N` latch.
+- `group = N` → only modules with `REG_GROUP_ID = N` take the snapshot.
 
 Use case — separating tariff groups.
 
@@ -318,7 +318,7 @@ Use case — separating tariff groups.
 |---|---|---|
 | `i2c bus scan` shows several modules at the same address after a field add | A new module at `0x50` is conflicting | Re-address it separately before adding |
 | One module NACKs more often than the others | Cable fault / VCC drop | Check VCC under load |
-| After a GC frame, one module does not latch | `GC_ENABLE` of FLEET_CONFIG is off or group mismatch | Check `REG_FLEET_CONFIG` and `REG_GROUP_ID` |
+| After a GC frame, one module does not take the snapshot | `GC_ENABLE` of FLEET_CONFIG is off or group mismatch | Check `REG_FLEET_CONFIG` and `REG_GROUP_ID` |
 
 Detailed multi-module scenarios are in [06 · Examples](06_examples.md).
 

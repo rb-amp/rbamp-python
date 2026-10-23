@@ -338,7 +338,7 @@ is unresponsive or the master is polling too often.
 
 ### Cadence check procedure
 
-1. **Check the cadence:** 60 s between latches is comfortable; 30 s
+1. **Check the cadence:** 60 s between snapshots is comfortable; 30 s
    is marginal; < 10 s guarantees stale reads.
 2. **Check the module's responsiveness** between snapshots:
 
@@ -364,7 +364,7 @@ is unresponsive or the master is polling too often.
 
 If you use a deep-sleep pattern on MicroPython, the **default**
 `dev.read_period_snapshot()` after the context-manager entry will
-always give a stale (or near-zero) result — `__enter__` does a LATCH
+always give a stale (or near-zero) result — `__enter__` takes a snapshot (`LATCH` command)
 prime that resets the firmware accumulator. The canonical pattern
 uses `skip_latch=True` + a known sleep duration (the
 `machine.deepsleep(SLEEP_MS)` argument) — see
@@ -535,8 +535,8 @@ your own `time.monotonic()` / `time.ticks_diff()`.
 read gets a `master_dt_ms` equal to the **full** interval since the
 previous successful snapshot — i.e., it covers both the "lost" stale
 period and the current one. The firmware preserves the `avg_p`
-accumulator across an empty latch (firmware-side persistence): on the
-next valid latch it is already an averaged value over the whole
+accumulator across an empty snapshot (firmware-side persistence): on the
+next valid snapshot it is already an averaged value over the whole
 interval. The Wh integration **stays exact** — no double-count, no
 under-count.
 
@@ -926,7 +926,7 @@ In the issue include:
 - **The library's verbose logs** — the simplest way to collect them
   is `dev.set_logger(print)` before the operation that fails. The
   package will print its internal steps (the retry loop, settle
-  timeouts, the latch primer, etc.) — attach the stdout to the issue.
+  timeouts, the snapshot primer, etc.) — attach the stdout to the issue.
 - **(If available)** the logic-analyzer capture file.
 
 ## CLI — `rbamp scan` / `rbamp read` / `rbamp address`

@@ -169,18 +169,18 @@ pattern.
 
 ## Scenario 3 — Monitoring 3 modules on one bus
 
-**Goal:** poll 3 modules at addresses 0x50 / 0x51 / 0x52, latched
+**Goal:** poll 3 modules at addresses 0x50 / 0x51 / 0x52, snapshotted
 **coherently** so their per-channel powers sum on the *same* mains
 period.
 
-> **Coherent latch:** one General-Call frame
-> (`A5 27 <group> <tick_lo> <tick_hi>`) latches every module that opted
+> **Coherent snapshot:** one General-Call frame
+> (`A5 27 <group> <tick_lo> <tick_hi>`) makes every module take its snapshot that opted
 > in with `fleet.enable_gc_all()` — fleet skew < 10 µs, so the totals add
 > up. `fleet.gc_latch()` sends the frame and returns the broadcast `tick`;
 > `fleet.check_sync()` reads each module's witnessed tick back so you can
 > flag one that missed the frame. (On v1.0/v1.1 firmware General-Call was
 > unavailable and this scenario fell back to sequential per-device
-> latching.) See
+> snapshots.) See
 > [09 · API Reference](09_api_reference.md) for `RbAmpFleet`.
 
 ### CPython version
@@ -202,13 +202,13 @@ with SMBus(1) as bus:
             print(f"skip 0x{addr:02X}: {exc}"); continue
         fleet.add(dev)
 
-    # one-time: persist the General-Call latch opt-in on every module
+    # one-time: persist the General-Call snapshot opt-in on every module
     fleet.enable_gc_all(group=GC_GROUP)
 
     while True:
         time.sleep(60)
 
-        tick = fleet.gc_latch(group=GC_GROUP)     # one all-call frame latches the bus
+        tick = fleet.gc_latch(group=GC_GROUP)     # one all-call frame snapshots the bus
         time.sleep(0.050)                         # single shared settle
         sync = fleet.check_sync(expected_tick=tick)
 
@@ -470,7 +470,7 @@ with SMBus(1) as bus:
     while True:
         time.sleep(60)
 
-        # One coherent all-call latch for the whole bus (see Scenario 3)
+        # One coherent all-call snapshot for the whole bus (see Scenario 3)
         tick = fleet.gc_latch(group=GC_GROUP)
         time.sleep(0.050)                     # single shared settle
         sync = fleet.check_sync(expected_tick=tick)
@@ -598,7 +598,7 @@ For deferred cloud sync (log locally, send once per hour), see the
 ## Scenario 9 — Battery-powered deep-sleep logger (MicroPython only)
 
 **Goal:** an ESP32 (MicroPython) wakes once every 10 minutes,
-performs a single period latch, publishes via WiFi+MQTT, and goes
+takes a single period snapshot, publishes via WiFi+MQTT, and goes
 back into deep sleep. Energy is persisted across sleep cycles via
 RTC memory.
 
@@ -606,7 +606,7 @@ RTC memory.
 > the current firmware, `dev.begin()` issues a CMD_LATCH_PERIOD
 > primer that resets the firmware's period accumulator. This means
 > that after a deep-sleep wake you cannot simply call
-> `read_period_snapshot()` by default — that call would latch again
+> `read_period_snapshot()` by default — that call would take another snapshot
 > and return near-zero data covering only the ~50 ms since the
 > primer. The correct pattern below uses `skip_latch=True` to read
 > the data accumulated during the sleep interval, and the **known
@@ -650,17 +650,17 @@ if not valid:
     primer_done = False
 
 i2c = I2C(0, scl=Pin(22), sda=Pin(21), freq=50_000)
-with RbAmp(i2c, 0x50) as dev:    # __enter__ automatically calls begin() — the LATCH primer
+with RbAmp(i2c, 0x50) as dev:    # __enter__ automatically calls begin() — the snapshot primer
     dev.energy.disable()         # the master owns Wh persistence itself
 
     if not primer_done:
-        # First wake: the primer just latched away the "dirty" data.
+        # First wake: the primer snapshot just discarded the "dirty" data.
         # Save the flag and go straight back to sleep — the next wake,
         # SLEEP_MS later, will get a full accumulator for the interval.
         save_state(RTC_MAGIC, rtc_total_wh, primer_done=True)
         machine.deepsleep(SLEEP_MS)
 
-    # skip_latch=True reads what the begin() primer latched —
+    # skip_latch=True reads what the begin() primer snapshot captured —
     # i.e. the accumulator for the elapsed sleep interval.
     snap = dev.read_period_snapshot(settle_ms=0, skip_latch=True)
 
@@ -696,7 +696,7 @@ see the section on power consumption and `systemd` suspend in
 
 **Goal:** integrate into an existing asyncio / uasyncio event loop.
 The package provides an async generator `dev.stream_period(interval_s=...)`
-that encapsulates the periodic latch plus automatic stale handling.
+that encapsulates the periodic snapshot plus automatic stale handling.
 
 ### CPython (via `asyncio` + `paho-mqtt-asyncio`, or flat)
 
@@ -740,7 +740,7 @@ asyncio.run(main())
 
 `stream_period(interval_s=, skip_stale=)` parameters:
 
-- `interval_s` — the period between latches (recommended ≥ 30 s)
+- `interval_s` — the period between snapshots (recommended ≥ 30 s)
 - `skip_stale=True` (default) — stale snapshots are automatically
   skipped; the generator simply advances to the next interval
 - `skip_stale=False` — stale snapshots are yielded with

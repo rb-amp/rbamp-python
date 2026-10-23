@@ -22,10 +22,10 @@ type of the bus object.
 - **Variant** — UI1, UI2, UI3, I1, I2, I3 (and UI5/UI7): how many current channels, and whether the module has a voltage input.
 - **Firmware version** / **module image version** — the software inside the module; some STD calls need a recent enough image.
 - **RT reading** — an instant reading (voltage, current, power), refreshed by the module every 100 ms.
-- **Period / latch** — a latch freezes the totals of the period so far and starts the next one; a **period snapshot** is the frozen result (average power per channel).
+- **Period / snapshot** — a snapshot freezes the totals of the period so far and starts the next one; a **period snapshot** is the frozen result (average power per channel).
 - **Stale snapshot** — the module had no fresh snapshot ready; the library raises `RbAmpStaleError` and the next good snapshot covers the whole interval.
-- **Primer** — the first latch done by `begin()`; it discards what accumulated since power-up.
-- **GC (General Call)** — one broadcast I²C frame that makes several modules latch at the same instant.
+- **Primer** — the first snapshot taken by `begin()`; it discards what accumulated since power-up.
+- **GC (General Call)** — one broadcast I²C frame that makes several modules take their snapshot at the same instant.
 - **DRDY** — optional pin that pulses every ~100 ms when new RT data is ready.
 
 ## One module or many
@@ -180,7 +180,7 @@ with SMBus(1) as bus, RbAmp(bus, 0x50) as dev:
 import time, struct
 
 with SMBus(1) as bus:
-    # Latch + 50 ms settle + ready-flag check + assemble 4 bytes of avg_p
+    # Snapshot + 50 ms settle + ready-flag check + assemble 4 bytes of avg_p
     bus.write_byte_data(0x50, 0x01, 0x27)   # REG_COMMAND, CMD_LATCH_PERIOD
     t_latch = time.monotonic()
     time.sleep(0.050)                        # settle
@@ -201,7 +201,7 @@ with SMBus(1) as bus:
 ```python
 with SMBus(1) as bus, RbAmp(bus, 0x50) as dev:
     dev.begin()
-    snap = dev.read_period_snapshot()        # latch + settle + valid + read + Wh tick
+    snap = dev.read_period_snapshot()        # snapshot + settle + valid + read + Wh tick
     print(snap.avg_p[0], "W")
     print(dev.energy.wh(0), "Wh")
 ```
@@ -227,7 +227,7 @@ Internally the package guarantees:
 |---|---|---|
 | Reading U / I / P / PF / frequency | ✅ | only for debugging on a logic analyzer |
 | Per-period energy metering | ✅ | only if Wh are stored outside the package (e.g., in a DB on the master side) |
-| Several modules on one bus | ✅ (via sequential LATCH + shared settle) | — |
+| Several modules on one bus | ✅ (via sequential snapshot + shared settle) | — |
 | Bidirectional metering on BASIC | ✅ (via RT reads — see [06_examples.md](06_examples.md)) | alternative — your own RT-read loop |
 | Async streaming via asyncio / uasyncio | ✅ (`async for snap in dev.stream_period()`) | hard — no built-in async wrapper |
 | Porting to another platform | n/a | ✅ — see [`rbamp-docs`](https://github.com/rb-amp/rbamp-docs) (register map and protocol) |
@@ -287,7 +287,7 @@ For all the typical tasks in the first rows, the package is the way to go.
 │   │ Instance state:                             │   │
 │   │  • RbAmpEnergy — Wh accumulator             │   │
 │   │  • RbAmpSnapshot / RbAmpPeriodSnapshot      │   │
-│   │  • Time of last latch (monotonic)           │   │
+│   │  • Time of last snapshot (monotonic)           │   │
 │   └─────────────────────────────────────────────┘   │
 └─────────────────────────────────────────────────────┘
                        │
@@ -332,7 +332,7 @@ except RbAmpError as e:
 
 ### The `dev.begin()` flow
 
-![Sequence of bus transactions that begin() performs: read the version, detect the module line, send the primer latch, then return.](images/python-begin-flow.png)
+![Sequence of bus transactions that begin() performs: read the version, detect the module line, send the primer snapshot, then return.](images/python-begin-flow.png)
 
 ```text
 code          RbAmp                Backend             rbAmp module
@@ -356,14 +356,14 @@ code          RbAmp                Backend             rbAmp module
   │◄────self────┤  (or raises RbAmpIOError on failure)        │
 ```
 
-The first latch is a primer (the module returns what it has
+The first snapshot is a primer (the module returns what it has
 accumulated since power-on, which is unsuitable for tariff metering).
 The package records on its own that this snapshot must be discarded —
 user code never sees it.
 
 ### The `dev.read_period_snapshot()` flow
 
-![Sequence of read_period_snapshot(): latch the period, read the snapshot block, integrate energy on the master for BASIC or read on-device counters for STD.](images/python-snapshot-flow.png)
+![Sequence of read_period_snapshot(): take the period snapshot, read the snapshot block, integrate energy on the master for BASIC or read on-device counters for STD.](images/python-snapshot-flow.png)
 
 ```text
 code          RbAmp                Backend             rbAmp module
@@ -387,7 +387,7 @@ code          RbAmp                Backend             rbAmp module
   │◄─snap──────┤                    │                       │
 ```
 
-The atomic latch on the module side guarantees that every measurement
+The atomic snapshot on the module side guarantees that every measurement
 within a period lands in exactly one snapshot — no
 duplication, no losses at the period boundary.
 

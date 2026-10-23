@@ -102,7 +102,7 @@ from rbamp import RbAmpFleet
 
 fleet = RbAmpFleet(bus)
 fleet.scan()                          # adopt every rbAmp on the bus
-fleet.enable_gc_all(group=0)          # opt every module into GC latch
+fleet.enable_gc_all(group=0)          # opt every module into GC snapshot
 
 tick = fleet.gc_latch(group=0)        # broadcast 5-byte GC frame
 sync = fleet.check_sync(expected_tick=tick)
