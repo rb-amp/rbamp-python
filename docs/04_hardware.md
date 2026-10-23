@@ -263,6 +263,8 @@ At 50 kHz, a single read transaction ≈ 200-400 µs. A full RT block for one ch
 
 #### Period sync — synchronizing the periods
 
+> **Native protocol:** [Multi-module — simultaneous snapshot (period-metering)](https://github.com/rb-amp/rbamp-docs/blob/main/period-metering.md#multi-module--simultaneous-snapshot) · [6.4 Period sync — two strategies (api-reference)](https://github.com/rb-amp/rbamp-docs/blob/main/api-reference.md#64-period-sync--two-strategies)
+
 For tariff metering, all modules must snapshot the **same** interval.
 
 ![One broadcast command makes all modules take their period snapshot at the same instant.](images/period-broadcast-latch.png)
