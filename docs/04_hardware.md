@@ -18,6 +18,8 @@ I²C + optional `DRDY`).
 
 ## LV-side pinout
 
+![Low-voltage header of the module: VCC, GND, SDA, SCL and the optional DRDY pin, with what each one needs.](images/hw-pinout.png)
+
 The module runs on 3.3 V I²C logic and is **5 V tolerant** on the
 signal lines. All LV pins are fully galvanically isolated from mains.
 
@@ -36,7 +38,7 @@ signal lines. All LV pins are fully galvanically isolated from mains.
 - **Nominal voltage**: 5 V DC
 - **Permitted range**: 4.5..5.5 V
 - **Supply current**: ~15 mA typical, ~25 mA peak when writing to flash
-- **Ripple**: < 50 mV peak-to-peak (for ADC accuracy)
+- **Ripple**: < 50 mV peak-to-peak (for measurement accuracy)
 
 The module carries an on-board regulator, an RC filter, ceramic
 capacitors and a ferrite bead — no additional filtering is required
@@ -105,11 +107,17 @@ Cut them with a sharp blade:
 
 ### Rule of thumb
 
+![Where the I²C pull-up resistors stay for one, two and three or more modules, and how the solder jumpers are cut.](images/i2c-pullup-rules.png)
+
 | rbAmp modules on the bus | Pull-ups |
 |:---:|---|
 | 1 | Leave as-is (built-in 4.7 kΩ works) |
 | 2 | Keep on one, cut on the other |
-| 3+ | Cut on all modules, fit a single external 2.2…4.7 kΩ pair near the host |
+| 3 | Cut on all modules, fit one external 2.7…3.3 kΩ pair near the host |
+| 4…6 | Cut on all modules, one external 2.2…2.7 kΩ pair near the host |
+| 7…16 | Cut on all modules, one external 1.5…2.2 kΩ pair near the host; check the bus capacitance (≤ 400 pF), lower the bus speed if needed |
+
+The external values are recommended values (calculated from the I²C specification: sink current ≤ 3 mA at 3.3 V, bus capacitance ≤ 400 pF).
 
 > **If in doubt**: measure the resistance between SDA and VCC with the
 > devices powered off. It should be in the **1.5..4.7 kΩ** range. Less
@@ -153,6 +161,8 @@ single I²C bus, managed by one ESP32 / Raspberry Pi / SBC through
 exactly this topology; a single module is a special case (the same
 handle, but the fleet calls degenerate to trivial ones).
 
+![Several modules on one I²C bus with their built-in pull-ups cut and one external pair at the master, plus the three DRDY options.](images/hw-multimodule-bus.png)
+
 #### Typical deployments
 
 | Scenario | Configuration | Module count |
@@ -164,10 +174,12 @@ handle, but the fleet calls degenerate to trivial ones).
 #### Electrical limits
 
 - **Module count**: up to ~16 (total bus capacitance ≤ 400 pF at 100 kHz; at 50 kHz the margin is greater).
-- **Pull-ups for the fleet bus (important)**: each module ships with built-in 4.7 kΩ. On a multi-module bus, N pull-ups work in parallel → the sink is overloaded and the bus cannot pull down to LOW. **Cut the built-in pull-ups on all modules but one** (or cut them on all and keep **only an external** ~4.7 kΩ pair to 3.3 V at one point on the bus — recommended for long runs / noise / ESP32 as master).
-- The ESP32 internal pull-ups (~45 kΩ) are **too weak** for a multi-module bus with real trace length — **external** ~4.7 kΩ pull-ups are needed. This is part of the three-layer mitigation against bus-hang on a marginal bus — see [10 · Troubleshooting](10_troubleshooting.md), section "Script hangs / fails on timeout".
+- **Pull-ups for the fleet bus (important)**: each module ships with built-in 4.7 kΩ. On a multi-module bus, N pull-ups work in parallel → the sink is overloaded and the bus cannot pull down to LOW. **Cut the built-in pull-ups on all modules but one** (or cut them on all and keep **only an external** pair (2.7…3.3 kΩ for 3 modules, lower for larger buses — see the table above) to 3.3 V at one point on the bus — recommended for long runs / noise / ESP32 as master).
+- The ESP32 internal pull-ups (~45 kΩ) are **too weak** for a multi-module bus with real trace length — **external** pull-ups are needed (values: see the table above). This is part of the three-layer mitigation against bus-hang on a marginal bus — see [10 · Troubleshooting](10_troubleshooting.md), section "Script hangs / fails on timeout".
 
 #### Addressing — provisioning and field-swap (production-OK)
+
+![Provisioning modules one at a time: only one module still at the default address is on the bus while it is given its working address.](images/fleet-provisioning-one-virgin.png)
 
 The default factory address is `0x50`. Each new or replacement module
 goes through **provisioning** (once): re-addressing from `0x50` to a
@@ -248,6 +260,8 @@ At 50 kHz, a single read transaction ≈ 200-400 µs. A full RT block for one ch
 #### Period sync — synchronizing the periods
 
 For tariff metering, all modules must latch the **same** interval.
+
+![One broadcast command makes all modules latch their period at the same instant.](images/period-broadcast-latch.png)
 
 **Strategy 1 — sequential latch + common settle** (any firmware):
 

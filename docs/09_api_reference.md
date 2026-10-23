@@ -1,8 +1,8 @@
 # 09 · API Reference
 
-![rbAmp register map — page-0 address space (0x00..0xFF)](images/api-register-map.png)
+![Register map of the module: the page-0 address space from 0x00 to 0xFF](images/api-register-map.png)
 
-![Atomic period latch — one write closes the period and opens the next](images/period-atomic-latch.png)
+![Atomic period latch: one write closes the current period and opens the next](images/period-atomic-latch.png)
 
 The complete public API of the `rbamp` package. Source —
 [`__init__.py`](https://github.com/rb-amp/rbamp-python) (re-exports),
@@ -116,18 +116,7 @@ means: existing code with `except OSError:` handlers **keeps
 catching** rbAmp errors without any rewrite — the standard Python
 convention for hardware-I/O drivers.
 
-```text
-OSError
-└── RbAmpError                  (base, inherits OSError for compatibility)
-    ├── RbAmpIOError            — I²C transport error (NACK, retry exhausted, sanity reject)
-    ├── RbAmpTimeoutError       — timeout (wait_ready / commit_address_change window)
-    ├── RbAmpNotReadyError      — device not ready (reserved)
-    ├── RbAmpStaleError         — period snapshot stale (valid flag = 0)
-    ├── RbAmpParamError         — invalid argument (channel out of range, code not in per-class accept-set)
-    ├── RbAmpModeError          — operation refused in the current mode (factory-only operation, sensor class unset, factory-paired module)
-    ├── RbAmpVersionError       — incompatible firmware version
-    └── RbAmpNotSupportedError  — call not available on this module (STD-only call on a BASIC module, or a feature the module image lacks)
-```
+![Exception hierarchy of the rbamp package: every error derives from RbAmpError, which derives from OSError.](images/python-exception-hierarchy.png)
 
 > **Note**: `RbAmpParamError` inherits from `RbAmpError` + `ValueError`
 > on CPython (multi-base). On MicroPython, where multi-base
@@ -330,6 +319,8 @@ after `begin()` without hitting the bus.
 All methods raise `RbAmpIOError` on a communication failure (NACK
 after retry or sanity reject) or `RbAmpParamError` on an invalid
 argument.
+
+![Measurement windows of 100 ms run back to back, DRDY pulses once per window, and the master reads the atomic result block.](images/rt-window-timing.png)
 
 ### Properties
 

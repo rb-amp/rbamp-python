@@ -3,7 +3,7 @@
 Per root [SEED v1.3] (2026-06-16):
 - §3: CT-bind order-independent A1 + per-class. SCT_013 {1,2,3,4,6},
        WIRED_CT {1,2,3}, BUILTIN_CT {} (5/7 reject). NOT contiguous.
-- §2: bus-robustness — NACK-retry + R/W timeouts, generic для CPython.
+- §2: bus-robustness — NACK-retry + R/W timeouts, generic for CPython.
        upython-on-ESP32 keeps L8 IDF spin discipline.
 - L-006 F.13: multi-byte WRITE byte-at-a-time (LABEL setter must use loop).
 - Mirror arduino c5726bc RbAmpFleet shape — scan, poll_all, gc_latch +
@@ -198,7 +198,7 @@ def test_set_label_rejects_non_ascii(mock_backend):
     dev = RbAmp(mock_backend, addr=0x50)
     dev.begin()
     with pytest.raises(RbAmpParamError):
-        dev.set_label("кухня")  # Cyrillic — non-ASCII
+        dev.set_label("\u043a\u0443\u0445\u043d\u044f")  # Cyrillic — non-ASCII
 
 
 def test_read_label_strips_nuls(mock_backend):

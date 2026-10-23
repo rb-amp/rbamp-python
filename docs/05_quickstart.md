@@ -40,6 +40,8 @@ Check `dev.is_std` (or the SKU label on the module — see
 [06 · Examples](06_examples.md), Scenario 11. **BASIC module:** follow all steps.
 Step 3 and Step 4 are the same for both.
 
+![The path to a first reading: wire the module, set the clamp model, then read voltage, current and power.](images/first-reading-flow.png)
+
 ## Step 1 — Installing the package
 
 ### CPython (on a Linux SBC or x86)
@@ -94,6 +96,8 @@ The full pinout table for each host is in
 The SCT-013 CT clamp snaps around the **line conductor (L) only**, with
 the arrow on the clamp body pointing **in the direction of current
 toward the load**. See more in [04 · Wiring](04_hardware.md).
+
+![Connecting the clamp on the L wire with its arrow toward the load, and the mains reference terminals.](images/mains-ct-connection.png)
 
 > ⚠ **Mains safety.** Mains voltage can kill. Disconnect and lock out the
 > circuit before connecting the L/N terminals or fitting the clamp; have a

@@ -1,6 +1,6 @@
 # 02 · Module Lines
 
-![rbAmp module lines: BASIC / STANDARD / PRO capability ladder](images/tier-ladder.png)
+![The BASIC and STANDARD (STD) module lines and what each provides.](images/module-lines.png)
 
 ## What a Module Line Is
 
@@ -62,6 +62,8 @@ not present in the package's Wh counter on BASIC.
   not required
 
 ### Bidirectional Metering on BASIC (Master-Side)
+
+![BASIC counts consumption only on the module with export handled on the master, while STD keeps cumulative counters on the device.](images/energy-basic-vs-std.png)
 
 If you need to track export to the grid separately on a BASIC module,
 **do it on the master side**. The RT power `dev.power[0]` is
@@ -153,6 +155,8 @@ Full signatures: [09 · API Reference](09_api_reference.md#std-module-line-160).
 PRO is not implemented in this library. There is no PRO-specific API.
 
 ## How to Detect the Module Line at Runtime
+
+![How to tell at runtime whether the connected module is a BASIC or a STANDARD (STD) module.](images/module-line-detect.png)
 
 In the current firmware there is no explicit "module line" register. Indirect
 indicators are available through handle properties:

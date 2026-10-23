@@ -7,7 +7,7 @@ bills imported and exported kWh differently.
 
 The library's built-in ``dev.energy.wh(0)`` accumulator yields the NET
 balance. This script keeps two additional double-precision counters for
-gross consume and gross export by sampling the real-time power register at
+gross consume and gross export by reading the real-time power register at
 200 ms cadence (matching the device's commit period).
 
 Run:

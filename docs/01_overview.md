@@ -52,28 +52,7 @@ that same handle directly — the fleet API is not needed.
 
 ## The 80% scenario — mains + N sub-loads
 
-```text
-                              ┌──────────────────────────┐
-                              │   ESP32 / RPi / SBC      │
-                              │   RbAmpFleet(bus)        │
-                              └──┬─────────┬─────────┬───┘
-                                 │   I²C (shared bus)
-        ┌────────────────────────┘         │         │
-        │                                  │         │
-   ┌────▼─────┐                     ┌──────▼────┐    │
-   │ rbAmp #1 │                     │ rbAmp #2  │    │
-   │ MAINS    │                     │ Boiler    │    │
-   │ 0x50     │                     │ 0x51      │    │
-   └──────────┘                     └───────────┘    │
-        │ (at the feed)             (load 1)         │
-                                                     │
-                                               ┌─────▼─────┐
-                                               │ rbAmp #3  │
-                                               │ A/C       │
-                                               │ 0x52      │
-                                               └───────────┘
-                                              (load 2)
-```
+![One module on the mains feed and one module per sub-load share an I²C bus with the master, which polls them all with a single fleet call.](images/fleet-topology-mains-plus-subloads.png)
 
 - 1 module at the feed (mains) — total consumption and grid quality.
 - N modules on individual loads — per-channel metering.
@@ -249,13 +228,15 @@ Internally the package guarantees:
 | Reading U / I / P / PF / frequency | ✅ | only for debugging on a logic analyzer |
 | Per-period energy metering | ✅ | only if Wh are stored outside the package (e.g., in a DB on the master side) |
 | Several modules on one bus | ✅ (via sequential LATCH + shared settle) | — |
-| Bidirectional metering on BASIC | ✅ (via RT sampling — see [06_examples.md](06_examples.md)) | alternative — your own RT-read loop |
+| Bidirectional metering on BASIC | ✅ (via RT reads — see [06_examples.md](06_examples.md)) | alternative — your own RT-read loop |
 | Async streaming via asyncio / uasyncio | ✅ (`async for snap in dev.stream_period()`) | hard — no built-in async wrapper |
-| Porting to another platform | n/a | ✅ — see [`rbamp-spec`](https://github.com/rb-amp/rbamp-spec) |
+| Porting to another platform | n/a | ✅ — see [`rbamp-docs`](https://github.com/rb-amp/rbamp-docs) (register map and protocol) |
 
 For all the typical tasks in the first rows, the package is the way to go.
 
 ## Architecture
+
+![Where a Python script sits: script, rbamp package, I²C backend and the rbAmp module, with the I²C speed for each host.](images/python-architecture.png)
 
 ```text
 ┌─────────────────────────────────────────────────────┐
@@ -331,16 +312,7 @@ Unlike the Arduino library (where errors are reported via
 are reported via `esp_err_t`), the Python package uses the
 **classic Python pattern** — an exception hierarchy.
 
-```text
-RbAmpError
-├── RbAmpIOError         — I²C transport error (NACK after retry, bus glitch)
-├── RbAmpTimeoutError    — timeout (waitReady expired / commit_address_change window)
-├── RbAmpNotReadyError   — device not ready (reserved)
-├── RbAmpStaleError      — period snapshot not ready (valid flag = 0)
-├── RbAmpParamError      — invalid argument (channel out of range, code not in per-class accept-set)
-├── RbAmpModeError       — operation requires factory mode
-└── RbAmpVersionError    — incompatible firmware version (or REG_VERSION = 0/0xFF)
-```
+![Exception hierarchy of the rbamp package: every error derives from RbAmpError, which derives from OSError.](images/python-exception-hierarchy.png)
 
 The standard Python pattern:
 
@@ -359,6 +331,8 @@ except RbAmpError as e:
 ## Interaction diagrams
 
 ### The `dev.begin()` flow
+
+![Sequence of bus transactions that begin() performs: read the version, detect the module line, send the primer latch, then return.](images/python-begin-flow.png)
 
 ```text
 code          RbAmp                Backend             rbAmp module
@@ -388,6 +362,8 @@ The package records on its own that this snapshot must be discarded —
 user code never sees it.
 
 ### The `dev.read_period_snapshot()` flow
+
+![Sequence of read_period_snapshot(): latch the period, read the snapshot block, integrate energy on the master for BASIC or read on-device counters for STD.](images/python-snapshot-flow.png)
 
 ```text
 code          RbAmp                Backend             rbAmp module

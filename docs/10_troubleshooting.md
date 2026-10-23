@@ -230,7 +230,7 @@ the cause is in the current.
 
 ### If all three steps pass and the current is still zero
 
-Then the signal at the ADC really is below the noise floor. Check:
+Then the signal at the module input really is below the noise floor. Check:
 
 - **Whether current is actually flowing** — measure it with a
   multimeter (a DC clamp / AC clamp meter) on the same wire.

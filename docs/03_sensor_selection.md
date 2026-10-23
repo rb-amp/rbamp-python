@@ -1,6 +1,6 @@
 # 03 · Current sensor selection
 
-![CT clamp installation: clamp the L wire only, arrow pointing toward the load](images/hw-ct-install.png)
+![Clamp installation: the CT clamps the L wire only, with its arrow pointing toward the load](images/hw-ct-install.png)
 
 This chapter answers two questions:
 
@@ -51,8 +51,10 @@ Within the SCT-013 family, seven models are supported (codes
 
 ### How to pick the right model
 
+![Choosing an SCT-013 clamp: take the largest expected current plus a 30 % margin, pick the smallest rated clamp above it, then set its model code.](images/sct-model-chooser.png)
+
 The one rule: **choose the smallest rated clamp above your largest
-expected current.** An oversized clamp (for example a 100 A clamp on a
+expected current plus a 30 % margin.** An oversized clamp (for example a 100 A clamp on a
 circuit that never exceeds 5 A) still works, but gives low resolution
 and a large error at typical values.
 
@@ -65,7 +67,8 @@ above the rating.
 
 Count a regular inrush as part of your "largest expected current". For
 example, for a washing machine with a 12 A inrush current (and 2–3 A
-during operation) SCT-013-030 is better than SCT-013-005.
+during operation): 12 A × 1.3 = 15.6 A, so the smallest rated clamp above
+it is SCT-013-020 (code 6).
 
 ## How to tell the module about your choice
 
@@ -304,7 +307,7 @@ def read_combined_current(dev):
     return i_high
 ```
 
-![Dual-CT install: two clamps on one L wire (low-range + high-range), both arrows toward the load](images/ct-install-dual.png)
+![Two clamps of different ratings on the same L wire, both arrows pointing toward the load](images/ct-install-dual.png)
 
 <!-- MD028 separator -->
 
@@ -325,7 +328,7 @@ Three strategies in increasing order of complexity:
 1. **Size the CT to the largest expected current** (the rule above). The most
    common mistake is to put an SCT-013-100 (100 A) on a home outlet with
    a typical consumption of 0.5–10 A. The signal sits in the lower 1–10%
-   of the ADC — where noise becomes comparable to the signal. For a
+   of the input range — where noise becomes comparable to the signal. For a
    household scenario (16 A outlet) SCT-013-030 is optimal; for
    connecting a single device (≤ 5 A) — SCT-013-005.
 2. **Dual-CT topology** (requires a UI2/UI3 SKU): a small clamp on the
